@@ -28,3 +28,6 @@ __pycache__/
 # Build artifacts
 build/
 dist/
+
+# SQLite Database
+hiresense.db

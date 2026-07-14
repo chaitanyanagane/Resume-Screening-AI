@@ -26,3 +26,10 @@ streamlit>=1.35.0
 # Utilities
 matplotlib>=3.7.0
 seaborn>=0.12.0
+
+# API & Auth
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pyjwt>=2.8.0
+bcrypt>=4.1.0
+python-multipart>=0.0.9

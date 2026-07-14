@@ -1,53 +1,55 @@
-# AI-Powered Resume Screening & Bias Auditing System
+# HireSense AI — Intelligent Resume Screening & Recruitment Platform
 
-A premium, production-ready AI Resume Screener and Fairness Auditing application built with Streamlit, Sentence-Transformers (BERT), Scikit-Learn, and Altair. The system is designed to automate candidate matching while actively auditing and mitigating demographic bias in hiring pipelines.
+HireSense AI is a production-ready, full-stack enterprise recruitment and applicant tracking platform. It upgrades the data science Streamlit prototype into a modern, multi-tenant system built with a **FastAPI backend** (SQLite + JWT RBAC auth + BERT matching pipeline) and a high-fidelity **React + TypeScript + Framer Motion frontend** inspired by premium SaaS tools like Ashby and Linear.
 
 ---
 
-## 🔬 Core 6-Stage AI Pipeline
+## 🏗️ Platform Architecture Diagram
 
-This system implements the full 6-stage AI hiring pipeline designed to ensure high accuracy and strict compliance with demographic fairness metrics:
+The system decouples the frontend client workspace from the machine learning scoring and database transaction layer:
 
 ```mermaid
 graph TD
-    A[Stage 1: Resume Input] --> B[Stage 2: Preprocessing & Blinding]
-    B --> C[Stage 3: Feature Extraction]
-    C --> D[Stage 4: Job Description Matching]
-    D --> E[Stage 5: Bias Auditing]
-    E --> F[Stage 6: Explainable AI Results]
+    subgraph Client Panel (React + TypeScript)
+        A[Login / Register] --> B{Role Auth Router}
+        B -->|Candidate| C[Candidate Dashboard]
+        B -->|Recruiter| D[Recruiter Dashboard]
+        B -->|Admin| E[Admin Control Panel]
+        C & D & E --> F[Methodology Guide]
+    end
+
+    subgraph Service Layer (FastAPI Backend)
+        C & D & E -->|REST APIs + JWT Token| G[FastAPI Router]
+        G --> H[Auth & RBAC Handler]
+        G --> I[Job Manager]
+        G --> J[Resume Uploader & Parser]
+        G --> K[AI Screening Pipeline]
+        G --> L[Analytics Telemetry Engine]
+        G --> M[Report / CSV Exporter]
+    end
+
+    subgraph Storage Layer
+        H & I & J & K & L --> N[(SQLite Database: hiresense.db)]
+    end
+
+    subgraph NLP Core Engine
+        K --> O[Sentence-BERT Embeddings]
+        K --> P[TF-IDF N-Gram Vectorizer]
+        K --> Q[Heuristic Demographic Auditor]
+    end
 ```
 
-1. **Resume Input**: Extracts unstructured text from PDF, DOCX, and TXT resume files.
-2. **NLP Preprocessing & Blinding**: Sanitizes text (lowercasing, symbol scrubbing) and applies **Blind Screening** to strip out proxy variables for protected attributes (emails, phone numbers, pronouns, honorifics, and graduation years) before scoring.
-3. **Feature Extraction**: Generates contextual neural embeddings using Sentence-BERT (`all-MiniLM-L6-v2`) and keyword n-gram vectors using TF-IDF.
-4. **JD Cosine Matching**: Calculates semantic and keyword similarity against the Job Description. Applies education level weights (1–5) and experience duration heuristics.
-5. **Demographic Bias Auditing**: Heuristically extracts gender indicators from the original text (names, honorifics, pronouns) *prior to blinding* to compute the selection rates, Average Match Scores, and the **Demographic Parity Difference (DPD)** across demographic groups.
-6. **Explainable AI (XAI)**: Generates detailed candidate feedback profiles detailing **Profile Strengths**, **Profile Gaps (Weaknesses)**, **Actionable Improvement Tips**, and a **Hiring Recommendation** classification (Strong Hire, Consider, Weak Hire).
-
 ---
 
-## 🛠️ Key Improvements & Bug Fixes
+## 🗄️ Database ER Diagram Schema
 
-A series of functional, mathematical, and logical bugs present in the initial baseline codebase have been resolved:
+HireSense AI uses a local SQLite database (`hiresense.db`) with normalized, indexed relationships to track application lifecycles:
 
-* **Case-Sensitive Education Check**: Fixed a logic bug where `"be"` in `EDUCATION_KEYWORDS` matched common words like `"backend"`, `"become"`, and `"before"`, resulting in unqualified candidates being classified at Bachelor level (level 3). It now matches `"BE"` or `"B.E."` case-sensitively in the original text.
-* **Skill Extraction Boundaries**: Updated the skill extraction regex boundary checks to support special characters (e.g. matching `c++` and `c#` without getting truncated by regex `\b` boundaries).
-* **Experience Aggregation**: Rewrote the years-of-experience parser to scan all matches across multiple patterns and take the maximum duration, rather than stopping at the first small number encountered.
-* **Consistent TF-IDF Scoring**: Patched the TF-IDF matching sequence to fit the vectorizer on the *entire batch* of candidates plus the Job Description before computing similarity, resolving an issue where candidate scores changed depending on their evaluation order.
-* **BERT Matcher Fallback**: Fixed a mathematical dimension-mismatch crash (`ValueError`) that occurred in the fallback TF-IDF calculation path when `sentence-transformers` was missing.
-* **Real-world Bias Auditing**: Replaced artificial random group assignment (`np.random.choice` with a static seed) with dynamic demographic gender estimation based on names and pronouns in the original resume.
-* **Memory and Disk Leak Prevention**: Handled temporary file deletion immediately after evaluation within a `try/finally` block.
-
----
-
-## 🖥️ UI/UX & Dashboard Redesign
-
-The Streamlit interface was overhauled to feel like a modern, premium SaaS dashboard:
-* **Custom Styling**: Injected a Plus Jakarta Sans and Outfit font configuration, modern shadows, layout paddings, and hover-lift transitions.
-* **Metrics Panel**: Displays KPI metrics (Total Resumes, Shortlisted count, Avg ATS Score, Inferred Bias level) at a glance.
-* **Altair Graphs**: Includes interactive charts showing match score distributions, skill frequencies, and selection/score statistics by demographic group.
-* **Advanced Controls**: Adds text search filtering (by name/skills), range sliders (experience, match score), select boxes (education level), sorting options, and pagination (5 candidates per page).
-* **HTML Profile Cards**: Features custom badge rings, check-marked skill tags, green strengths and red gaps columns, and scrollable preview text fields.
+* **users**: Stores accounts. `role` CHECK constraint enforces `('candidate', 'recruiter', 'admin')`.
+* **jobs**: Stores job postings created by Recruiters. Cascades deletion to linked applications.
+* **candidate_profiles**: Contains parsed skills, education index, experience duration, and gender estimations.
+* **applications**: Links candidate profiles to jobs. Stores overall ATS score, sub-scores (BERT, TF-IDF, skills overlap), weaknesses/strengths lists, review notes, and AI-generated interview questions.
+* **activity_logs**: Stores system events and user actions for administrators to audit.
 
 ---
 
@@ -55,60 +57,84 @@ The Streamlit interface was overhauled to feel like a modern, premium SaaS dashb
 
 ```
 resume_screening/
-├── app.py                    ← Streamlit Web App (main entry point)
-├── requirements.txt          ← Python package dependencies
-├── README.md                 ← Project documentation (this file)
-├── GUIDE.md                  ← Baseline project guide
-├── src/
-│   ├── __init__.py           ← Package initialization
-│   ├── resume_parser.py      ← Stage 1 & 2: Text extraction + cleaning + heuristics
-│   ├── matcher.py            ← Stage 3 & 4: BERT + TF-IDF similarity matcher
-│   ├── bias_auditor.py       ← Stage 5: Demographic Parity Audit
-│   ├── explainer.py          ← Stage 6: Strengths/Weaknesses and Recommendations
-│   └── pipeline.py           ← Master pipeline coordinator
+├── main.py                    ← FastAPI Backend application server
+├── requirements.txt            ← Python backend package dependencies
+├── hiresense.db                ← Local transactional SQLite database (created on startup)
+├── README.md                   ← Project documentation (this file)
+├── src/                        ← Python Backend Modules
+│   ├── database.py             ← SQLite table setup & default data seedings
+│   ├── auth.py                 ← Password hashing (bcrypt) and JWT RBAC dependencies
+│   ├── exporter.py             ← CSV comparisons and profile report formatters
+│   ├── resume_parser.py        ← Skill boundaries & qualification parser
+│   ├── matcher.py              ← BERT + TF-IDF fallback similarity matcher
+│   ├── pipeline.py             ← Master screening pipeline manager
+│   ├── bias_auditor.py         ← Heuristic gender auditor
+│   └── explainer.py            ← AI recommendations & strength/gap explainer
+└── frontend/                   ← Single-Page React App (Vite + TS client)
+    ├── package.json            ← Client packages (Framer Motion, Lucide icons)
+    ├── index.html              ← Root mounting page
+    ├── src/
+    │   ├── main.tsx            ← Vite mounting point
+    │   ├── App.tsx             ← Dashboard router, theme toggle, session state
+    │   ├── index.css           ← Custom vanilla CSS Linear-inspired stylesheet
+    │   └── views/
+    │       ├── LoginRegister.tsx       ← Authentication & registration tabs
+    │       ├── CandidateDashboard.tsx  ← Drag & drop upload, timeline tracking
+    │       ├── RecruiterDashboard.tsx  ← Job builder, candidate comparisons matrix
+    │       ├── AdminDashboard.tsx      ← Role management, system activity logs
+    │       └── Methodology.tsx         ← Core NLP stage & formula walkthroughs
 ```
 
 ---
 
-## 🔧 Installation & Setup
+## 🔧 Installation & Quick Setup
 
-1. **Clone/Navigate to the workspace**:
-   ```bash
-   cd resume_screening
-   ```
+Follow these steps to run the full-stack system locally:
 
-2. **Recreate the virtual environment**:
-   ```bash
-   python3 -m venv venv --clear
-   source venv/bin/activate  # On Mac/Linux
-   # venv\Scripts\activate  # On Windows
-   ```
-
-3. **Install the dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
----
-
-## 🚀 Running the Application
-
-Launch the Streamlit app:
+### 1. Backend Server Setup
+From the project root:
 ```bash
-streamlit run app.py
-```
-This will start the local server. Open the application in your browser at:
-🔗 **[http://localhost:8501](http://localhost:8501)**
+# 1. Activate python virtual environment
+source venv/bin/activate
 
-*To check the redesigned layouts, click the **"Load Sample Data"** button in the sidebar and run the screening.*
+# 2. Install dependencies (adds FastAPI, Uvicorn, bcrypt, PyJWT)
+pip install -r requirements.txt
+
+# 3. Launch the FastAPI server
+PYTHONPATH=. ./venv/bin/uvicorn main:app --reload --port 8000
+```
+*The database file `hiresense.db` is initialized and pre-seeded on server startup.*
+
+### 2. Frontend Client Setup
+In a new terminal window, navigate to the `frontend/` folder:
+```bash
+cd frontend
+
+# 1. Install frontend packages
+npm install
+
+# 2. Run the Vite development server
+npm run dev
+```
+*Vite will start the client dev server. Open the application link:*
+🔗 **[http://localhost:5173](http://localhost:5173)**
 
 ---
 
-## 🧪 Testing & Verification
+## 🔐 Default Seeding Accounts (Sign In Credentials)
 
-To run the automated verification test suite checking for regex boundaries, education parsing, and fallback matching correctness:
-```bash
-python3 -m unittest discover -s src/ -p "*_test.py"  # Standard tests (if any)
-# Or run the custom verification script:
-python3 path/to/artifacts/scratch/test_pipeline.py
-```
+The database automatically seeds default credentials for immediate evaluation. Test role features by logging in with:
+
+| Role | Username | Password | Key Actions |
+| :--- | :--- | :--- | :--- |
+| **Admin** | `admin@hiresense.ai` | `admin123` | View logs, manage user roles, platform statistics. |
+| **Recruiter** | `recruiter@hiresense.ai` | `recruiter123` | Create/delete jobs, sort/search candidates matrix, write notes. |
+| **Candidate** | `candidate@hiresense.ai` | `candidate123` | Upload resumes, browse jobs, apply, check application timeline. |
+
+---
+
+## 🔬 Core AI Matcher & Bias Mitigation Heuristics
+
+* **Blind Screening (Stage 2)**: Strives for fairness. Strips candidate name, honorific, gender-identifying pronouns, phone, email, and graduation years before scoring to prevent age/gender proxy bias.
+* **Semantic Vector Match (Stage 4)**: Maps JD requirements against resumes using the Sentence-BERT `all-MiniLM-L6-v2` neural model to evaluate conceptual alignment rather than strict keyword lookups.
+* **Fairness Telemetry Audit (Stage 5)**: Resolves bias loops. Estimates applicant gender *before* blinding to compute the Demographic Parity Difference (DPD) across applicants, highlighting selection rates.
