@@ -93,6 +93,79 @@ def init_db():
     )
     """)
 
+    # 6. Resume Analysis Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS resume_analyses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        candidate_profile_id INTEGER NOT NULL,
+        summary TEXT,
+        strengths TEXT, -- JSON string
+        weaknesses TEXT, -- JSON string
+        linkedin TEXT,
+        github TEXT,
+        projects TEXT, -- JSON string
+        certifications TEXT, -- JSON string
+        languages TEXT, -- JSON string
+        resume_quality TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (candidate_profile_id) REFERENCES candidate_profiles (id) ON DELETE CASCADE
+    )
+    """)
+
+    # 7. Skill Match Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS skill_matches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        application_id INTEGER NOT NULL,
+        required_skills TEXT, -- JSON string
+        present_skills TEXT, -- JSON string
+        missing_skills TEXT, -- JSON string
+        learning_recommendations TEXT, -- JSON string
+        semantic_overlap_pct REAL DEFAULT 0.0,
+        FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE
+    )
+    """)
+
+    # 8. Candidate Ranking Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS candidate_rankings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id INTEGER NOT NULL,
+        application_id INTEGER UNIQUE NOT NULL,
+        rank_position INTEGER,
+        ats_score REAL DEFAULT 0.0,
+        skill_match_pct REAL DEFAULT 0.0,
+        recommendation TEXT,
+        confidence_score REAL DEFAULT 0.0,
+        FOREIGN KEY (job_id) REFERENCES jobs (id) ON DELETE CASCADE,
+        FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE
+    )
+    """)
+
+    # 9. Interview Recommendation Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS interview_recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        application_id INTEGER UNIQUE NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('Highly Recommended', 'Recommended', 'Consider', 'Not Recommended')),
+        explanation TEXT,
+        FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE
+    )
+    """)
+
+    # 10. AI Interview Questions Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ai_interview_questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        application_id INTEGER NOT NULL,
+        technical_questions TEXT, -- JSON string
+        behavioral_questions TEXT, -- JSON string
+        project_questions TEXT, -- JSON string
+        coding_questions TEXT, -- JSON string
+        FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE
+    )
+    """)
+
     # Seed Default Users if empty
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
@@ -200,6 +273,74 @@ def init_db():
                 now
             )
         )
+        app_id = cursor.lastrowid
+        
+        # Seed resume_analyses
+        cursor.execute("""
+            INSERT INTO resume_analyses (candidate_profile_id, summary, strengths, weaknesses, linkedin, github, projects, certifications, languages, resume_quality, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            priya_profile_id,
+            res["explanation"]["summary"],
+            json.dumps(res["explanation"]["strengths"]),
+            json.dumps(res["explanation"]["weaknesses"]),
+            "https://linkedin.com/in/priyasharma",
+            "https://github.com/priyasharma",
+            json.dumps(res["parsed"]["projects"]),
+            json.dumps(res["parsed"]["certifications"]),
+            json.dumps(res["parsed"]["languages"]),
+            "High formatting score with email, phone, and git links present.",
+            now
+        ))
+
+        # Seed skill_matches
+        cursor.execute("""
+            INSERT INTO skill_matches (application_id, required_skills, present_skills, missing_skills, learning_recommendations, semantic_overlap_pct)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            app_id,
+            json.dumps(res["score_breakdown"]["required_skills"]),
+            json.dumps(res["score_breakdown"]["present_skills"]),
+            json.dumps(res["score_breakdown"]["missing_skills"]),
+            json.dumps(res["explanation"]["learning_recommendations"]),
+            res["score_breakdown"]["tfidf_score"]
+        ))
+
+        # Seed candidate_rankings
+        cursor.execute("""
+            INSERT INTO candidate_rankings (job_id, application_id, rank_position, ats_score, skill_match_pct, recommendation, confidence_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            ml_job_id,
+            app_id,
+            1,
+            res["final_score"],
+            res["score_breakdown"]["skills_score"],
+            res["explanation"]["hiring_recommendation"],
+            res["explanation"]["confidence_score"]
+        ))
+
+        # Seed interview_recommendations
+        cursor.execute("""
+            INSERT INTO interview_recommendations (application_id, status, explanation)
+            VALUES (?, ?, ?)
+        """, (
+            app_id,
+            res["explanation"]["hiring_recommendation"],
+            res["explanation"]["recommendation_explanation"]
+        ))
+
+        # Seed ai_interview_questions
+        cursor.execute("""
+            INSERT INTO ai_interview_questions (application_id, technical_questions, behavioral_questions, project_questions, coding_questions)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            app_id,
+            json.dumps(res["explanation"]["categorized_questions"]["technical"]),
+            json.dumps(res["explanation"]["categorized_questions"]["behavioral"]),
+            json.dumps(res["explanation"]["categorized_questions"]["project"]),
+            json.dumps(res["explanation"]["categorized_questions"]["coding"])
+        ))
         conn.commit()
 
     conn.close()

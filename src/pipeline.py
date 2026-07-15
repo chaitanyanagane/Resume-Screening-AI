@@ -35,6 +35,7 @@ class ResumeScreeningPipeline:
         jd_text: str,
         apply_blind_screening: bool = True,
         is_raw_text: bool = False,
+        jd_requirements: dict = None,
     ) -> Dict:
         """
         Process one resume through the full pipeline.
@@ -44,6 +45,7 @@ class ResumeScreeningPipeline:
             jd_text: Job Description text
             apply_blind_screening: Remove protected attributes before scoring
             is_raw_text: If True, treat first arg as raw text
+            jd_requirements: Structured JD requirements dictionary
 
         Returns:
             Candidate dict with scores, parsed info, and explanation
@@ -67,6 +69,7 @@ class ResumeScreeningPipeline:
             resume_text=screening_text,  # Use blinded text for scoring
             jd_text=jd_text,
             extra_features=parsed,
+            jd_requirements=jd_requirements,
         )
 
         # Build candidate object

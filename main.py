@@ -124,7 +124,7 @@ def login(req: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid email or password credentials")
         
     access_token = create_access_token(data={
-        "sub": user["id"],
+        "sub": str(user["id"]),
         "email": user["email"],
         "role": user["role"]
     })
@@ -357,21 +357,26 @@ def apply_to_job(req: ApplicationApplyRequest, current_user: dict = Depends(Role
     job_skills_req = json.loads(job["skills_required"])
     job_exp = job["experience_required"]
     
-    # Run the NLP screening pipeline
+    # Run the NLP screening pipeline with job specifications
+    jd_requirements = {
+        "skills": job_skills_req,
+        "experience": job_exp,
+        "education": job["education_required"]
+    }
     pipeline = ResumeScreeningPipeline()
-    res = pipeline.process_resume(resume_text, job["description"], apply_blind_screening=True, is_raw_text=True)
+    res = pipeline.process_resume(resume_text, job["description"], apply_blind_screening=True, is_raw_text=True, jd_requirements=jd_requirements)
     
     # Generate custom interview questions
     questions = [
         f"How did you leverage your experience in {', '.join(list(candidate_skills)[:3])} to solve engineering problems?"
     ]
-    missing_skills = [s for s in job_skills_req if s not in candidate_skills]
+    missing_skills = res["score_breakdown"]["missing_skills"]
     if missing_skills:
         questions.append(f"We noted that you might not have listed {missing_skills[0]} on your profile. Can you explain your conceptual understanding of it?")
     if profile["years_experience"] < job_exp:
         questions.append(f"This role prefers {job_exp}+ years of experience, and we matched {profile['years_experience']} years. How do you plan to scale up to the senior expectations?")
     
-    recruiter_notes = f"AI Recommendation: {res['explanation']['hiring_recommendation']}. Skill overlap: {len(candidate_skills.intersection(job_skills_req))}/{len(job_skills_req)}."
+    recruiter_notes = res["explanation"]["recruiter_notes"]
 
     now = datetime.utcnow().isoformat()
     cursor.execute(
@@ -383,6 +388,75 @@ def apply_to_job(req: ApplicationApplyRequest, current_user: dict = Depends(Role
         )
     )
     app_id = cursor.lastrowid
+    
+    # 1. Insert into resume_analyses
+    cursor.execute("""
+        INSERT INTO resume_analyses (candidate_profile_id, summary, strengths, weaknesses, linkedin, github, projects, certifications, languages, resume_quality, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        profile_id,
+        res["explanation"]["summary"],
+        json.dumps(res["explanation"]["strengths"]),
+        json.dumps(res["explanation"]["weaknesses"]),
+        res["parsed"]["linkedin"],
+        res["parsed"]["github"],
+        json.dumps(res["parsed"]["projects"]),
+        json.dumps(res["parsed"]["certifications"]),
+        json.dumps(res["parsed"]["languages"]),
+        f"Contact verification matched. Structural quality score: {res['score_breakdown']['resume_quality_score']}/100.",
+        now
+    ))
+
+    # 2. Insert into skill_matches
+    cursor.execute("""
+        INSERT INTO skill_matches (application_id, required_skills, present_skills, missing_skills, learning_recommendations, semantic_overlap_pct)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        app_id,
+        json.dumps(res["score_breakdown"]["required_skills"]),
+        json.dumps(res["score_breakdown"]["present_skills"]),
+        json.dumps(res["score_breakdown"]["missing_skills"]),
+        json.dumps(res["explanation"]["learning_recommendations"]),
+        res["score_breakdown"]["tfidf_score"]
+    ))
+
+    # 3. Insert into candidate_rankings
+    cursor.execute("SELECT COUNT(*) FROM applications WHERE job_id = ?", (req.job_id,))
+    count_apps = cursor.fetchone()[0]
+    cursor.execute("""
+        INSERT INTO candidate_rankings (job_id, application_id, rank_position, ats_score, skill_match_pct, recommendation, confidence_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        req.job_id,
+        app_id,
+        count_apps,
+        res["final_score"],
+        res["score_breakdown"]["skills_score"],
+        res["explanation"]["hiring_recommendation"],
+        res["explanation"]["confidence_score"]
+    ))
+
+    # 4. Insert into interview_recommendations
+    cursor.execute("""
+        INSERT INTO interview_recommendations (application_id, status, explanation)
+        VALUES (?, ?, ?)
+    """, (
+        app_id,
+        res["explanation"]["hiring_recommendation"],
+        res["explanation"]["recommendation_explanation"]
+    ))
+
+    # 5. Insert into ai_interview_questions
+    cursor.execute("""
+        INSERT INTO ai_interview_questions (application_id, technical_questions, behavioral_questions, project_questions, coding_questions)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        app_id,
+        json.dumps(res["explanation"]["categorized_questions"]["technical"]),
+        json.dumps(res["explanation"]["categorized_questions"]["behavioral"]),
+        json.dumps(res["explanation"]["categorized_questions"]["project"]),
+        json.dumps(res["explanation"]["categorized_questions"]["coding"])
+    ))
     
     # Log activity
     cursor.execute(
@@ -623,3 +697,197 @@ def get_admin_logs(current_user: dict = Depends(RoleChecker(['admin']))):
     logs = cursor.fetchall()
     conn.close()
     return [dict(l) for l in logs]
+
+
+# ─── Modular AI Resume Analysis Endpoints ─────────────────────────────────────
+
+@app.get("/api/applications/{app_id}/analysis")
+def get_application_analysis(app_id: int, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Check application and candidate visibility rules
+    cursor.execute("SELECT candidate_profile_id FROM applications WHERE id = ?", (app_id,))
+    app = cursor.fetchone()
+    if not app:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Application not found")
+        
+    if current_user["role"] == "candidate":
+        cursor.execute("SELECT id FROM candidate_profiles WHERE user_id = ?", (current_user["id"],))
+        cand = cursor.fetchone()
+        if not cand or cand["id"] != app["candidate_profile_id"]:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    cursor.execute("SELECT * FROM resume_analyses WHERE candidate_profile_id = ?", (app["candidate_profile_id"],))
+    analysis = cursor.fetchone()
+    conn.close()
+    
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Resume analysis details not found")
+        
+    d = dict(analysis)
+    try: d["strengths"] = json.loads(d["strengths"])
+    except Exception: d["strengths"] = []
+    try: d["weaknesses"] = json.loads(d["weaknesses"])
+    except Exception: d["weaknesses"] = []
+    try: d["projects"] = json.loads(d["projects"])
+    except Exception: d["projects"] = []
+    try: d["certifications"] = json.loads(d["certifications"])
+    except Exception: d["certifications"] = []
+    try: d["languages"] = json.loads(d["languages"])
+    except Exception: d["languages"] = []
+    
+    return d
+
+
+@app.get("/api/applications/{app_id}/score")
+def get_application_ats_score(app_id: int, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT candidate_profile_id, score_breakdown, explanation FROM applications WHERE id = ?", (app_id,))
+    app = cursor.fetchone()
+    if not app:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Application not found")
+        
+    if current_user["role"] == "candidate":
+        cursor.execute("SELECT id FROM candidate_profiles WHERE user_id = ?", (current_user["id"],))
+        cand = cursor.fetchone()
+        if not cand or cand["id"] != app["candidate_profile_id"]:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    conn.close()
+    
+    try: breakdown = json.loads(app["score_breakdown"])
+    except Exception: breakdown = {}
+    try: explanation = json.loads(app["explanation"])
+    except Exception: explanation = {}
+    
+    return {
+        "score_breakdown": breakdown,
+        "explanation": explanation
+    }
+
+
+@app.get("/api/jobs/{job_id}/rankings")
+def get_job_rankings(job_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT cr.*, u.name as candidate_name, a.status as application_status
+        FROM candidate_rankings cr
+        JOIN applications a ON cr.application_id = a.id
+        JOIN candidate_profiles cp ON a.candidate_profile_id = cp.id
+        JOIN users u ON cp.user_id = u.id
+        WHERE cr.job_id = ?
+        ORDER BY cr.ats_score DESC
+    """, (job_id,))
+    
+    rankings = cursor.fetchall()
+    conn.close()
+    
+    return [dict(r) for r in rankings]
+
+
+@app.get("/api/applications/{app_id}/skills")
+def get_application_skills(app_id: int, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT candidate_profile_id FROM applications WHERE id = ?", (app_id,))
+    app = cursor.fetchone()
+    if not app:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Application not found")
+        
+    if current_user["role"] == "candidate":
+        cursor.execute("SELECT id FROM candidate_profiles WHERE user_id = ?", (current_user["id"],))
+        cand = cursor.fetchone()
+        if not cand or cand["id"] != app["candidate_profile_id"]:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    cursor.execute("SELECT * FROM skill_matches WHERE application_id = ?", (app_id,))
+    match = cursor.fetchone()
+    conn.close()
+    
+    if not match:
+        raise HTTPException(status_code=404, detail="Skill matches not found")
+        
+    d = dict(match)
+    try: d["required_skills"] = json.loads(d["required_skills"])
+    except Exception: d["required_skills"] = []
+    try: d["present_skills"] = json.loads(d["present_skills"])
+    except Exception: d["present_skills"] = []
+    try: d["missing_skills"] = json.loads(d["missing_skills"])
+    except Exception: d["missing_skills"] = []
+    try: d["learning_recommendations"] = json.loads(d["learning_recommendations"])
+    except Exception: d["learning_recommendations"] = []
+    
+    return d
+
+
+@app.get("/api/applications/{app_id}/questions")
+def get_application_questions(app_id: int, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT candidate_profile_id FROM applications WHERE id = ?", (app_id,))
+    app = cursor.fetchone()
+    if not app:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Application not found")
+        
+    if current_user["role"] == "candidate":
+        cursor.execute("SELECT id FROM candidate_profiles WHERE user_id = ?", (current_user["id"],))
+        cand = cursor.fetchone()
+        if not cand or cand["id"] != app["candidate_profile_id"]:
+            conn.close()
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    cursor.execute("SELECT * FROM ai_interview_questions WHERE application_id = ?", (app_id,))
+    questions = cursor.fetchone()
+    conn.close()
+    
+    if not questions:
+        raise HTTPException(status_code=404, detail="AI Interview questions not found")
+        
+    d = dict(questions)
+    try: d["technical_questions"] = json.loads(d["technical_questions"])
+    except Exception: d["technical_questions"] = []
+    try: d["behavioral_questions"] = json.loads(d["behavioral_questions"])
+    except Exception: d["behavioral_questions"] = []
+    try: d["project_questions"] = json.loads(d["project_questions"])
+    except Exception: d["project_questions"] = []
+    try: d["coding_questions"] = json.loads(d["coding_questions"])
+    except Exception: d["coding_questions"] = []
+    
+    return d
+
+
+@app.get("/api/applications/{app_id}/notes")
+def get_application_notes(app_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT notes FROM applications WHERE id = ?", (app_id,))
+    app = cursor.fetchone()
+    if not app:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Application not found")
+        
+    cursor.execute("SELECT * FROM interview_recommendations WHERE application_id = ?", (app_id,))
+    rec = cursor.fetchone()
+    conn.close()
+    
+    rec_dict = dict(rec) if rec else {}
+    
+    return {
+        "notes": app["notes"],
+        "recommendation": rec_dict
+    }

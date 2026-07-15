@@ -87,6 +87,35 @@ def explain_score_rules(candidate: Dict, jd_text: str) -> Dict:
     }
 
     final_score = candidate.get('final_score', 0)
+    score_breakdown = candidate.get('score_breakdown', {})
+    missing_skills = score_breakdown.get('missing_skills', [])
+    present_skills = score_breakdown.get('present_skills', [])
+    required_skills = score_breakdown.get('required_skills', [])
+
+    # Calculate Confidence Score [0.0, 1.0]
+    # Factors: presence of contact details, number of skills, text readability
+    yoe = parsed.get('years_experience', 0.0)
+    conf = 0.8
+    if parsed.get('email') and parsed.get('phone'): conf += 0.05
+    if parsed.get('linkedin') or parsed.get('github'): conf += 0.05
+    if len(parsed.get('skills', [])) > 5: conf += 0.05
+    if parsed.get('projects') and len(parsed.get('projects', [])) >= 2: conf += 0.05
+    confidence_score = round(min(conf, 1.0), 2)
+
+    # Compile recommendation status
+    rec_status = _get_recommendation(final_score)
+    rec_explanation = _get_recommendation_explanation(final_score, yoe, len(present_skills))
+
+    # Compile learning recommendations
+    learn_recs = _get_learning_recommendations(missing_skills)
+
+    # Compile categorized questions
+    cat_questions = _get_categorized_questions(candidate, jd_text)
+
+    # Compile summary & notes
+    summary = _get_resume_summary(candidate, jd_text)
+    notes = _get_recruiter_notes(final_score, yoe, present_skills, missing_skills)
+
     return {
         'candidate_name': candidate.get('name', 'Unknown'),
         'final_score': final_score,
@@ -95,7 +124,16 @@ def explain_score_rules(candidate: Dict, jd_text: str) -> Dict:
         'improvement_tips': _get_improvement_tips(candidate, jd_text),
         'strengths': _get_strengths(candidate, jd_text),
         'weaknesses': _get_weaknesses(candidate, jd_text),
-        'hiring_recommendation': _get_recommendation(final_score),
+        'hiring_recommendation': rec_status,
+        'recommendation_explanation': rec_explanation,
+        'confidence_score': confidence_score,
+        'summary': summary,
+        'recruiter_notes': notes,
+        'learning_recommendations': learn_recs,
+        'categorized_questions': cat_questions,
+        'required_skills': required_skills,
+        'present_skills': present_skills,
+        'missing_skills': missing_skills
     }
 
 
@@ -139,17 +177,10 @@ def _get_weaknesses(candidate: Dict, jd_text: str) -> List[str]:
     yoe = parsed.get('years_experience', 0)
     edu_level = parsed.get('education_level', 0)
     
-    # Extract keywords from JD to check missing skills
-    jd_lower = jd_text.lower()
-    try:
-        from src.resume_parser import SKILLS_KEYWORDS
-        jd_skills = [s for s in SKILLS_KEYWORDS if s in jd_lower]
-        candidate_skills = set(parsed.get('skills', []))
-        missing_skills = [s for s in jd_skills if s not in candidate_skills]
-        if missing_skills:
-            weaknesses.append(f"Missing core JD skills: {', '.join(missing_skills[:4])}")
-    except Exception:
-        pass
+    # Check missing skills
+    missing_skills = score_breakdown.get('missing_skills', [])
+    if missing_skills:
+        weaknesses.append(f"Missing core JD skills: {', '.join(missing_skills[:4])}")
         
     if yoe < 2.0:
         weaknesses.append(f"Limited experience ({yoe} years) for a core engineering role.")
@@ -167,12 +198,108 @@ def _get_weaknesses(candidate: Dict, jd_text: str) -> List[str]:
 
 
 def _get_recommendation(score: float) -> str:
-    if score >= 70.0:
-        return "Strong Hire"
+    if score >= 80.0:
+        return "Highly Recommended"
+    elif score >= 65.0:
+        return "Recommended"
     elif score >= 40.0:
         return "Consider"
     else:
-        return "Weak Hire"
+        return "Not Recommended"
+
+
+def _get_recommendation_explanation(score: float, yoe: float, matched_skills_count: int) -> str:
+    if score >= 80.0:
+        return f"Outstanding alignment with {yoe} years experience and matching {matched_skills_count} required technical skills."
+    elif score >= 65.0:
+        return "Solid candidate demonstrating direct competence in core requirements. Fits standard profile benchmarks."
+    elif score >= 40.0:
+        return "Candidate satisfies secondary requirements but has technical gaps or experience limitations. Assess learning agility."
+    else:
+        return "Candidate profile falls significantly below threshold. Critical required skills are missing."
+
+
+def _get_resume_summary(candidate: Dict, jd_text: str) -> str:
+    parsed = candidate.get('parsed', {})
+    skills = parsed.get('skills', [])
+    yoe = parsed.get('years_experience', 0)
+    edu_level = parsed.get('education_level', 0)
+    
+    edu_map = {0: 'secondary credentials', 1: '12th standard education', 2: 'diploma credentials', 
+               3: 'Bachelor\'s degree', 4: 'Master\'s degree', 5: 'PhD research background'}
+    edu_str = edu_map.get(edu_level, 'degree')
+
+    top_skills = ", ".join(skills[:3]) if skills else "technical"
+    return f"This candidate demonstrates a strong {top_skills} foundation with {yoe} years of experience. Holding a {edu_str}, their academic and project profile aligns well with software engineering and specialized technical roles."
+
+
+def _get_recruiter_notes(score: float, yoe: float, present_skills: List[str], missing_skills: List[str]) -> str:
+    skills_clean = [s.replace(" (Semantic Match)", "") for s in present_skills]
+    top_matches = ", ".join(skills_clean[:3])
+    
+    if score >= 80.0:
+        return f"Highly qualified candidate. Core strengths in {top_matches}. Excellent YOE ({yoe} yrs). Schedule technical interviews immediately."
+    elif score >= 65.0:
+        return f"Good candidate profile showing proficiency in {top_matches}. Focus technical interview on evaluating missing competencies like: {', '.join(missing_skills[:2])}."
+    elif score >= 40.0:
+        return f"Considerable profile with basic experience ({yoe} yrs). Gaps identified in required stack ({', '.join(missing_skills[:3])}). Evaluate growth potential."
+    else:
+        return f"Not recommended. Major gaps in required core stack. Candidate is missing: {', '.join(missing_skills[:3])}."
+
+
+def _get_learning_recommendations(missing_skills: List[str]) -> List[str]:
+    recs = []
+    topic_map = {
+        "tensorflow": "Deep learning architectures and Keras integration",
+        "pytorch": "Neural network architectures and PyTorch fundamentals",
+        "docker": "Containerization principles, Dockerfiles, and image building",
+        "kubernetes": "Container orchestration, Pods, Services, and deployments",
+        "aws": "AWS Core Services (EC2, S3, RDS) and Cloud Architecting",
+        "gcp": "Google Cloud infrastructure and computing engines",
+        "postgresql": "SQL database optimization, indexing, and complex queries",
+        "fastapi": "FastAPI request lifecycle, async endpoints, and Pydantic validation",
+        "sql": "Relational schemas, indexes, and SQL queries optimization",
+        "git": "Git flow branching strategies and version control"
+    }
+    for ms in missing_skills:
+        recs.append(topic_map.get(ms.lower(), f"Advanced practices and applications of {ms.title()}"))
+    return recs[:4] if recs else ["Keep updating technical skills through hands-on cloud and devops tools integrations."]
+
+
+def _get_categorized_questions(candidate: Dict, jd_text: str) -> Dict:
+    parsed = candidate.get('parsed', {})
+    skills = parsed.get('skills', [])
+    projects = parsed.get('projects', [])
+    lang = skills[0] if skills else "Python"
+    
+    tech = [
+        f"How would you explain the scaling challenges of {skills[0] if len(skills) > 0 else 'your stack'} in large-scale deployments?",
+        f"What are the core differences between a relational database and a NoSQL database in terms of CAP theorem?"
+    ]
+    
+    behavioral = [
+        "Describe a situation where you had to work with a teammate who disagreed with your architectural design choices. How did you align?",
+        "Tell us about a time you noticed a security or performance bug in a system but it wasn't assigned to you. What did you do?"
+    ]
+    
+    proj_q = []
+    if projects and len(projects) > 0:
+        proj_q.append(f"Can you explain the engineering decisions and technical stack chosen for the project: '{projects[0]}'")
+    else:
+        proj_q.append("Walk us through the architectural diagram of your major project. What would you do differently if rebuilding it?")
+    proj_q.append("How did you handle error logs and unit testing in your projects?")
+    
+    coding = [
+        f"Write a function in {lang} to remove duplicates from an unsorted list in O(N) time complexity.",
+        f"Explain how you would write a test case to validate the inputs of your API endpoints in {lang}."
+    ]
+    
+    return {
+        "technical": tech,
+        "behavioral": behavioral,
+        "project": proj_q,
+        "coding": coding
+    }
 
 
 def _get_top_reason(factors: Dict) -> str:
@@ -183,6 +310,9 @@ def _get_top_reason(factors: Dict) -> str:
         val = info.get('value', 0)
         if isinstance(val, (int, float)) and val > best_val:
             best_val = val
+            best_factor = name
+        elif isinstance(val, str) and name == "Education Level" and val != 'Not detected':
+            best_val = 100
             best_factor = name
     return best_factor or "No dominant factor found."
 
