@@ -46,10 +46,57 @@ graph TD
 HireSense AI uses a local SQLite database (`hiresense.db`) with normalized, indexed relationships to track application lifecycles:
 
 * **users**: Stores accounts. `role` CHECK constraint enforces `('candidate', 'recruiter', 'admin')`.
-* **jobs**: Stores job postings created by Recruiters. Cascades deletion to linked applications.
+* **jobs**: Stores job postings created by Recruiters. Supports new departments, salary ranges, preferred skills, responsibilities, and hiring manager tags.
 * **candidate_profiles**: Contains parsed skills, education index, experience duration, and gender estimations.
-* **applications**: Links candidate profiles to jobs. Stores overall ATS score, sub-scores (BERT, TF-IDF, skills overlap), weaknesses/strengths lists, review notes, and AI-generated interview questions.
+* **applications**: Links candidate profiles to jobs. Tracks 8 hiring stages (`applied`, `screening`, `technical_interview`, `manager_round`, `hr_interview`, `offer`, `selected`, `rejected`), overall ATS score, sub-scores, weaknesses/strengths lists, review notes, and AI-generated interview questions.
 * **activity_logs**: Stores system events and user actions for administrators to audit.
+* **interviews**: Schedules screening, technical, manager, or HR rounds, meeting links, status, ratings (1-5 stars), and text feedback.
+* **recruiter_notes**: Logs pinned or standard notes with team member mentions and timestamp references.
+* **notifications**: Delivers alerts for new applications, completed AI analysis, and interview updates.
+
+---
+
+## 💼 Enterprise ATS Recruiter Workflow
+
+Recruiters are provided with a SaaS dashboard designed to manage candidate lifecycle pipelines:
+
+1. **Executive Dashboard**: Displays real-time KPI counts of total, active, and closed openings, scheduled sessions, offers, selected candidates, and rejections.
+2. **Job Openings CRUD**: Allows recruiters to create, edit, duplicate spec templates, delete, or open/close hiring pipelines.
+3. **Stage Transition Kanban**: Visualizes candidate progress across 8 stages. Recruiters can transition candidate stages with single-click selectors.
+4. **Candidate Center (Filters & Matrix)**: Combines global search queries with composite filters (Score ranges, experience ranges, locations, minimum degree levels, AI recommendation levels, and pipeline stages). Select exactly 2 candidates to trigger a side-by-side comparative matrix.
+5. **Scorecard detail drawer**:
+   - *AI screening results*: match breakdown, strengths, weaknesses, and custom questions.
+   - *Interview Scheduler*: book upcoming sessions, assign rating stars, and log interviewer feedback.
+   - *Pinned Recruiter Notes*: add notes, pin critical feedback to the top, and tag teammates.
+6. **Data Exports**: Export candidate listings as CSV/Excel files and download individual AI scorecard summary reports.
+
+---
+
+## 🔌 API Endpoints Reference
+
+### Authentication & Profiles
+* `POST /api/auth/register` — Create candidate/recruiter accounts.
+* `POST /api/auth/login` — Sign in and receive RBAC claims.
+* `GET /api/candidates/profile` — Fetch applicant skills and timeline.
+
+### Jobspec Management
+* `GET /api/jobs` — Retrieve vacancies (roles-aware scope).
+* `POST /api/jobs` — Publish new job spec specs.
+* `PUT /api/jobs/{id}` — Edit job details.
+* `POST /api/jobs/{id}/duplicate` — Copy a job posting template.
+* `PUT /api/jobs/{id}/close` & `PUT /api/jobs/{id}/reopen` — Close/reopen hiring.
+* `DELETE /api/jobs/{id}` — Remove a job post.
+
+### Applicant Pipeline
+* `PUT /api/applications/{id}/stage` — Transition candidate pipeline phase.
+* `GET /api/applications/{id}/interviews` — List candidate interviews.
+* `POST /api/applications/{id}/interviews` — Schedule new round.
+* `PUT /api/interviews/{id}/feedback` — Record scorecard ratings/feedback.
+* `GET /api/applications/{id}/notes/list` — Retrieve recruiter notes.
+* `POST /api/applications/{id}/notes` — Create review comments.
+* `PUT /api/notes/{id}/pin` — Toggle pinned status.
+* `DELETE /api/notes/{id}` — Remove a note.
+* `GET /api/applications/export/excel` — Download applicant tabular CSV.
 
 ---
 

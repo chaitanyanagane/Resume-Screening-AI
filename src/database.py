@@ -41,6 +41,12 @@ def init_db():
         location TEXT,
         status TEXT NOT NULL CHECK(status IN ('active', 'closed')),
         recruiter_id INTEGER NOT NULL,
+        department TEXT,
+        employment_type TEXT,
+        salary_range TEXT,
+        preferred_skills TEXT, -- JSON string
+        responsibilities TEXT, -- JSON string
+        hiring_manager TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (recruiter_id) REFERENCES users (id) ON DELETE CASCADE
     )
@@ -69,7 +75,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         job_id INTEGER NOT NULL,
         candidate_profile_id INTEGER NOT NULL,
-        status TEXT NOT NULL CHECK(status IN ('applied', 'reviewing', 'shortlisted', 'rejected')),
+        status TEXT NOT NULL CHECK(status IN ('applied', 'screening', 'technical_interview', 'manager_round', 'hr_interview', 'offer', 'selected', 'rejected')),
         score REAL DEFAULT 0.0,
         score_breakdown TEXT, -- JSON string
         explanation TEXT, -- JSON string
@@ -166,6 +172,52 @@ def init_db():
     )
     """)
 
+    # 11. Interviews Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS interviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        application_id INTEGER NOT NULL,
+        interviewer TEXT NOT NULL,
+        type TEXT NOT NULL, -- 'screening', 'technical', 'manager', 'hr'
+        scheduled_at TEXT NOT NULL,
+        meeting_link TEXT,
+        status TEXT NOT NULL CHECK(status IN ('scheduled', 'completed', 'cancelled')),
+        feedback TEXT,
+        rating INTEGER, -- 1-5
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE
+    )
+    """)
+
+    # 12. Recruiter Notes Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS recruiter_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        application_id INTEGER NOT NULL,
+        recruiter_id INTEGER NOT NULL,
+        note_text TEXT NOT NULL,
+        is_pinned INTEGER DEFAULT 0,
+        mentions TEXT, -- JSON string list
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (application_id) REFERENCES applications (id) ON DELETE CASCADE,
+        FOREIGN KEY (recruiter_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+    """)
+
+    # 13. Notifications Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recruiter_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        type TEXT NOT NULL, -- 'resume_uploaded', 'interview_accepted', 'candidate_withdrawn', 'job_closing', 'ai_complete'
+        is_read INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (recruiter_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+    """)
+
     # Seed Default Users if empty
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
@@ -200,21 +252,29 @@ def init_db():
         # Seed Jobs
         print("[DB] Seeding default jobs...")
         cursor.execute(
-            "INSERT INTO jobs (title, description, skills_required, experience_required, education_required, location, status, recruiter_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (title, description, skills_required, experience_required, education_required, location, status, recruiter_id, department, employment_type, salary_range, preferred_skills, responsibilities, hiring_manager, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "Machine Learning Engineer",
                 "We are looking for an experienced ML Engineer to join our AI team. Python, BERT, PyTorch, SQL, and Docker are required.",
                 '["python", "machine learning", "nlp", "bert", "pytorch", "sql", "docker"]',
-                3.0, 3, "Pune, India", "active", recruiter_id, now
+                3.0, 3, "Pune, India", "active", recruiter_id,
+                "Engineering", "Full-time", "$120,000 - $150,000",
+                '["aws", "gcp", "mlflow"]',
+                '["Design ML pipelines", "Train LLM models", "Optimize neural networks"]',
+                "Alex Carter (Director of AI)", now
             )
         )
         cursor.execute(
-            "INSERT INTO jobs (title, description, skills_required, experience_required, education_required, location, status, recruiter_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO jobs (title, description, skills_required, experience_required, education_required, location, status, recruiter_id, department, employment_type, salary_range, preferred_skills, responsibilities, hiring_manager, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "Senior Frontend Engineer",
                 "Join our frontend team building next-generation dashboards. Must be fluent in JavaScript, React, HTML, CSS, and Git.",
                 '["javascript", "typescript", "react", "html", "css", "git"]',
-                5.0, 3, "Remote", "active", recruiter_id, now
+                5.0, 3, "Remote", "active", recruiter_id,
+                "Engineering", "Full-time", "$110,000 - $140,000",
+                '["framer motion", "next.js", "tailwind"]',
+                '["Build user-facing modules", "Collaborate with designers", "Perform code audits"]',
+                "Sarah Jenkins (Frontend Lead)", now
             )
         )
         conn.commit()
@@ -261,7 +321,7 @@ def init_db():
         cursor.execute(
             "INSERT INTO applications (job_id, candidate_profile_id, status, score, score_breakdown, explanation, notes, interview_questions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                ml_job_id, priya_profile_id, "shortlisted",
+                ml_job_id, priya_profile_id, "technical_interview",
                 res["final_score"], json.dumps(res["score_breakdown"]),
                 json.dumps(res["explanation"]),
                 "Excellent alignment. IIT Bombay CS graduate with core experience in BERT and fraud detection. Recommended for technical round.",
@@ -341,8 +401,58 @@ def init_db():
             json.dumps(res["explanation"]["categorized_questions"]["project"]),
             json.dumps(res["explanation"]["categorized_questions"]["coding"])
         ))
-        conn.commit()
 
+        # Seed Interviews
+        cursor.execute("""
+            INSERT INTO interviews (application_id, interviewer, type, scheduled_at, meeting_link, status, feedback, rating, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            app_id, "Sarah Jenkins", "technical",
+            "2026-07-20T14:00:00", "https://meet.google.com/abc-defg-hij", "completed",
+            "Superb knowledge of BERT architecture and deep learning fundamentals. Answered scalability questions well.",
+            5, now
+        ))
+        cursor.execute("""
+            INSERT INTO interviews (application_id, interviewer, type, scheduled_at, meeting_link, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            app_id, "Alex Carter", "manager",
+            "2026-07-25T11:00:00", "https://meet.google.com/xyz-uvwx-yza", "scheduled", now
+        ))
+
+        # Seed Recruiter Notes
+        cursor.execute("""
+            INSERT INTO recruiter_notes (application_id, recruiter_id, note_text, is_pinned, mentions, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            app_id, recruiter_id, "Highly competent candidate. Spoke with team lead, confirmed strong core skills in ML pipelines.",
+            1, '["Sarah Jenkins"]', now
+        ))
+        cursor.execute("""
+            INSERT INTO recruiter_notes (application_id, recruiter_id, note_text, mentions, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            app_id, recruiter_id, "Scheduled manager round interview. Let's focus on system design capability.",
+            '["Alex Carter"]', now
+        ))
+
+        # Seed Notifications
+        cursor.execute("""
+            INSERT INTO notifications (recruiter_id, title, message, type, is_read, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            recruiter_id, "New Candidate Application", "Priya Sharma applied for Machine Learning Engineer",
+            "resume_uploaded", 0, now
+        ))
+        cursor.execute("""
+            INSERT INTO notifications (recruiter_id, title, message, type, is_read, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            recruiter_id, "AI Analysis Complete", "AI profile assessment completed for Priya Sharma (ATS Score: 85.36%)",
+            "ai_complete", 0, now
+        ))
+
+        conn.commit()
     conn.close()
 
 if __name__ == "__main__":
