@@ -3,7 +3,7 @@ import json
 import re
 import sqlite3
 from datetime import datetime
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status, Form
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status, Form, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel, EmailStr
@@ -14,7 +14,14 @@ from src.pipeline import ResumeScreeningPipeline
 from src.bias_auditor import infer_gender
 from src.exporter import export_applications_csv, generate_candidate_text_report
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import logging
+import time
+from src.security import api_limiter, auth_limiter
+
 app = FastAPI(title="HireSense AI API", version="1.0.0")
+api_router = APIRouter()
 
 # CORS config
 app.add_middleware(
@@ -24,6 +31,79 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Logging Setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("hiresense_ats")
+
+from starlette.types import ASGIApp, Scope, Receive, Send
+
+class TelemetryASGIMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        # Rate Limiting
+        if not (path.startswith("/docs") or path.startswith("/openapi.json") or path.startswith("/redoc")):
+            client = scope.get("client")
+            client_ip = client[0] if client else "unknown"
+            
+            if "auth" in path or "upload" in path:
+                allowed = auth_limiter.check_rate_limit(client_ip)
+            else:
+                allowed = api_limiter.check_rate_limit(client_ip)
+                
+            if not allowed:
+                await send({
+                    "type": "http.response.start",
+                    "status": 429,
+                    "headers": [(b"content-type", b"application/json")]
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": json.dumps({
+                        "success": False,
+                        "error": {"message": "Rate limit exceeded. Please try again later."}
+                    }).encode("utf-8")
+                })
+                return
+
+        # Request Logging & Telemetry
+        start_time = time.time()
+        
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                process_time = (time.time() - start_time) * 1000
+                formatted_process_time = f"{process_time:.2f}ms"
+                
+                # Add telemetry header
+                headers = list(message.get("headers", []))
+                headers.append((b"x-response-time", formatted_process_time.encode("utf-8")))
+                message["headers"] = headers
+                
+                # Log to logger
+                client = scope.get("client")
+                client_ip = client[0] if client else "unknown"
+                log_dict = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "client_ip": client_ip,
+                    "method": scope.get("method", "UNKNOWN"),
+                    "path": path,
+                    "status_code": message.get("status"),
+                    "duration": formatted_process_time
+                }
+                logger.info(json.dumps(log_dict))
+                
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+app.add_middleware(TelemetryASGIMiddleware)
 
 # Startup DB initialization
 @app.on_event("startup")
@@ -49,6 +129,10 @@ class TokenResponse(BaseModel):
     role: str
     name: str
     email: str
+    refresh_token: Optional[str] = None
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str
 
 class JobCreateRequest(BaseModel):
     title: str
@@ -111,7 +195,7 @@ class ApplicationStageRequest(BaseModel):
 
 # ─── Auth Endpoints ───────────────────────────────────────────────────────────
 
-@app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
+@api_router.post("/auth/register", status_code=status.HTTP_201_CREATED)
 def register(req: RegisterRequest):
     if req.role not in ['candidate', 'recruiter', 'admin']:
         raise HTTPException(status_code=400, detail="Invalid account role selection")
@@ -144,15 +228,15 @@ def register(req: RegisterRequest):
     conn.close()
     return {"message": "User registered successfully", "user_id": user_id}
 
-@app.post("/api/auth/login", response_model=TokenResponse)
+@api_router.post("/auth/login", response_model=TokenResponse)
 def login(req: LoginRequest):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, email, password_hash, role, name FROM users WHERE email = ?", (req.email,))
     user = cursor.fetchone()
-    conn.close()
     
     if user is None or not verify_password(req.password, user["password_hash"]):
+        conn.close()
         raise HTTPException(status_code=401, detail="Invalid email or password credentials")
         
     access_token = create_access_token(data={
@@ -161,13 +245,19 @@ def login(req: LoginRequest):
         "role": user["role"]
     })
     
+    from src.auth import create_refresh_token_in_conn
+    refresh_token = create_refresh_token_in_conn(conn, data={
+        "sub": str(user["id"]),
+        "email": user["email"],
+        "role": user["role"]
+    })
+    
     # Log login activity
-    conn = get_db_connection()
-    cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
         (user["id"], "login", "User logged in", datetime.utcnow().isoformat())
     )
+    
     conn.commit()
     conn.close()
 
@@ -176,17 +266,18 @@ def login(req: LoginRequest):
         "token_type": "bearer",
         "role": user["role"],
         "name": user["name"],
-        "email": user["email"]
+        "email": user["email"],
+        "refresh_token": refresh_token
     }
 
-@app.get("/api/auth/me")
+@api_router.get("/auth/me")
 def get_me(current_user: dict = Depends(get_current_user)):
     return current_user
 
 
 # ─── Job Management Endpoints ─────────────────────────────────────────────────
 
-@app.get("/api/jobs", response_model=List[JobResponse])
+@api_router.get("/jobs", response_model=List[JobResponse])
 def list_jobs(current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -214,7 +305,7 @@ def list_jobs(current_user: dict = Depends(get_current_user)):
         res.append(d)
     return res
 
-@app.post("/api/jobs", response_model=JobResponse)
+@api_router.post("/jobs", response_model=JobResponse)
 def create_job(req: JobCreateRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -253,7 +344,7 @@ def create_job(req: JobCreateRequest, current_user: dict = Depends(RoleChecker([
     except Exception: d["responsibilities"] = []
     return d
 
-@app.delete("/api/jobs/{job_id}")
+@api_router.delete("/jobs/{job_id}")
 def delete_job(job_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -282,7 +373,7 @@ def delete_job(job_id: int, current_user: dict = Depends(RoleChecker(['recruiter
     return {"message": "Job deleted successfully"}
 
 
-@app.put("/api/jobs/{job_id}", response_model=JobResponse)
+@api_router.put("/jobs/{job_id}", response_model=JobResponse)
 def edit_job(job_id: int, req: JobCreateRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -331,7 +422,7 @@ def edit_job(job_id: int, req: JobCreateRequest, current_user: dict = Depends(Ro
     return d
 
 
-@app.post("/api/jobs/{job_id}/duplicate", response_model=JobResponse)
+@api_router.post("/jobs/{job_id}/duplicate", response_model=JobResponse)
 def duplicate_job(job_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -382,12 +473,12 @@ def duplicate_job(job_id: int, current_user: dict = Depends(RoleChecker(['recrui
     return d
 
 
-@app.put("/api/jobs/{job_id}/close", response_model=JobResponse)
+@api_router.put("/jobs/{job_id}/close", response_model=JobResponse)
 def close_job(job_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     return toggle_job_status(job_id, "closed", current_user)
 
 
-@app.put("/api/jobs/{job_id}/reopen", response_model=JobResponse)
+@api_router.put("/jobs/{job_id}/reopen", response_model=JobResponse)
 def reopen_job(job_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     return toggle_job_status(job_id, "active", current_user)
 
@@ -433,21 +524,32 @@ def toggle_job_status(job_id: int, status: str, current_user: dict):
 
 # ─── Resume Uploading & Extraction ──────────────────────────────────────────
 
-@app.post("/api/candidates/profile/upload")
+@api_router.post("/candidates/profile/upload")
 async def upload_resume(file: UploadFile = File(...), current_user: dict = Depends(RoleChecker(['candidate']))):
     ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in [".pdf", ".docx", ".doc", ".txt"]:
-        raise HTTPException(status_code=400, detail="Unsupported file format")
+    if ext not in [".pdf", ".txt"]:
+        raise HTTPException(status_code=400, detail="Only PDF and TXT file formats are permitted in enterprise mode.")
         
-    import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        contents = await file.read()
-        tmp.write(contents)
-        temp_path = tmp.name
+    # Read file content to check size and content type
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File size exceeds the 5MB upload limit.")
+        
+    # Verify PDF signature if PDF
+    if ext == ".pdf" and not contents.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Invalid PDF binary payload signature.")
+        
+    # Save file with a secure unique UUID filename
+    unique_filename = f"{uuid.uuid4().hex}{ext}"
+    target_path = os.path.join(UPLOAD_DIR, unique_filename)
+    
+    with open(target_path, "wb") as f:
+        f.write(contents)
         
     try:
         from src.resume_parser import extract_text, parse_resume
-        resume_text = extract_text(temp_path)
+        # Extract text from the saved file
+        resume_text = extract_text(target_path)
         parsed = parse_resume(resume_text)
         inferred_gen = infer_gender(resume_text)
         
@@ -457,8 +559,8 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
         now = datetime.utcnow().isoformat()
         
         cursor.execute("""
-            INSERT INTO candidate_profiles (user_id, resume_text, skills, education_level, years_experience, inferred_gender, email, phone, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO candidate_profiles (user_id, resume_text, skills, education_level, years_experience, inferred_gender, email, phone, resume_filename, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 resume_text=excluded.resume_text,
                 skills=excluded.skills,
@@ -466,7 +568,8 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
                 years_experience=excluded.years_experience,
                 inferred_gender=excluded.inferred_gender,
                 email=excluded.email,
-                phone=excluded.phone
+                phone=excluded.phone,
+                resume_filename=excluded.resume_filename
         """, (
             current_user["id"],
             resume_text,
@@ -476,13 +579,14 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
             inferred_gen,
             parsed.get("email", current_user["email"]),
             parsed.get("phone", current_user.get("phone", "")),
+            unique_filename,
             now
         ))
         
         # Log activity
         cursor.execute(
             "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-            (current_user["id"], "upload_resume", f"Uploaded resume: {file.filename}", now)
+            (current_user["id"], "upload_resume", f"Uploaded resume: {file.filename} (stored as {unique_filename})", now)
         )
         
         conn.commit()
@@ -497,11 +601,12 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
             "email": parsed.get("email", ""),
             "phone": parsed.get("phone", "")
         }
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+    except Exception as e:
+        if os.path.exists(target_path):
+            os.unlink(target_path)
+        raise HTTPException(status_code=500, detail=f"Failed to process and parse resume: {str(e)}")
 
-@app.get("/api/candidates/profile")
+@api_router.get("/candidates/profile")
 def get_candidate_profile(current_user: dict = Depends(RoleChecker(['candidate']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -523,7 +628,7 @@ def get_candidate_profile(current_user: dict = Depends(RoleChecker(['candidate']
 
 # ─── Job Applications & AI Screening ──────────────────────────────────────────
 
-@app.post("/api/applications", status_code=status.HTTP_201_CREATED)
+@api_router.post("/applications", status_code=status.HTTP_201_CREATED)
 def apply_to_job(req: ApplicationApplyRequest, current_user: dict = Depends(RoleChecker(['candidate']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -666,7 +771,7 @@ def apply_to_job(req: ApplicationApplyRequest, current_user: dict = Depends(Role
     conn.close()
     return {"message": "Application submitted successfully", "application_id": app_id}
 
-@app.get("/api/applications")
+@api_router.get("/applications")
 def list_applications(job_id: Optional[int] = None, current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -727,7 +832,7 @@ def list_applications(job_id: Optional[int] = None, current_user: dict = Depends
         res.append(d)
     return res
 
-@app.put("/api/applications/{app_id}/status")
+@api_router.put("/applications/{app_id}/status")
 def update_application_status(app_id: int, req: ApplicationStatusUpdate, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     if req.status not in ['applied', 'reviewing', 'shortlisted', 'rejected']:
         raise HTTPException(status_code=400, detail="Invalid application status type")
@@ -771,7 +876,7 @@ def update_application_status(app_id: int, req: ApplicationStatusUpdate, current
 
 # ─── Data Export Endpoints ────────────────────────────────────────────────────
 
-@app.get("/api/applications/export/csv")
+@api_router.get("/applications/export/csv")
 def get_applications_csv(job_id: Optional[int] = None, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     apps = list_applications(job_id=job_id, current_user=current_user)
     csv_data = export_applications_csv(apps)
@@ -783,7 +888,7 @@ def get_applications_csv(job_id: Optional[int] = None, current_user: dict = Depe
         headers={"Content-Disposition": "attachment; filename=hiresense_candidates_export.csv"}
     )
 
-@app.get("/api/applications/{app_id}/export/report")
+@api_router.get("/applications/{app_id}/export/report")
 def get_candidate_report(app_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -814,7 +919,7 @@ def get_candidate_report(app_id: int, current_user: dict = Depends(RoleChecker([
 
 # ─── Analytics Dashboard Endpoints ────────────────────────────────────────────
 
-@app.get("/api/analytics")
+@api_router.get("/analytics")
 def get_analytics(current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -927,7 +1032,7 @@ def get_analytics(current_user: dict = Depends(RoleChecker(['recruiter', 'admin'
 
 # ─── Admin Core Endpoints ─────────────────────────────────────────────────────
 
-@app.get("/api/admin/users")
+@api_router.get("/admin/users")
 def get_admin_users(current_user: dict = Depends(RoleChecker(['admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -936,7 +1041,7 @@ def get_admin_users(current_user: dict = Depends(RoleChecker(['admin']))):
     conn.close()
     return [dict(u) for u in users]
 
-@app.get("/api/admin/logs")
+@api_router.get("/admin/logs")
 def get_admin_logs(current_user: dict = Depends(RoleChecker(['admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -953,7 +1058,7 @@ def get_admin_logs(current_user: dict = Depends(RoleChecker(['admin']))):
 
 # ─── Modular AI Resume Analysis Endpoints ─────────────────────────────────────
 
-@app.get("/api/applications/{app_id}/analysis")
+@api_router.get("/applications/{app_id}/analysis")
 def get_application_analysis(app_id: int, current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -994,7 +1099,7 @@ def get_application_analysis(app_id: int, current_user: dict = Depends(get_curre
     return d
 
 
-@app.get("/api/applications/{app_id}/score")
+@api_router.get("/applications/{app_id}/score")
 def get_application_ats_score(app_id: int, current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1025,7 +1130,7 @@ def get_application_ats_score(app_id: int, current_user: dict = Depends(get_curr
     }
 
 
-@app.get("/api/jobs/{job_id}/rankings")
+@api_router.get("/jobs/{job_id}/rankings")
 def get_job_rankings(job_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1046,7 +1151,7 @@ def get_job_rankings(job_id: int, current_user: dict = Depends(RoleChecker(['rec
     return [dict(r) for r in rankings]
 
 
-@app.get("/api/applications/{app_id}/skills")
+@api_router.get("/applications/{app_id}/skills")
 def get_application_skills(app_id: int, current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1084,7 +1189,7 @@ def get_application_skills(app_id: int, current_user: dict = Depends(get_current
     return d
 
 
-@app.get("/api/applications/{app_id}/questions")
+@api_router.get("/applications/{app_id}/questions")
 def get_application_questions(app_id: int, current_user: dict = Depends(get_current_user)):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1122,7 +1227,7 @@ def get_application_questions(app_id: int, current_user: dict = Depends(get_curr
     return d
 
 
-@app.get("/api/applications/{app_id}/notes")
+@api_router.get("/applications/{app_id}/notes")
 def get_application_notes(app_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1147,7 +1252,7 @@ def get_application_notes(app_id: int, current_user: dict = Depends(RoleChecker(
 
 # ─── Enterprise ATS Extension Endpoints ──────────────────────────────────────
 
-@app.put("/api/applications/{app_id}/stage")
+@api_router.put("/applications/{app_id}/stage")
 def update_application_stage(app_id: int, req: ApplicationStageRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1172,7 +1277,7 @@ def update_application_stage(app_id: int, req: ApplicationStageRequest, current_
     return {"message": "Application stage updated successfully", "stage": req.stage}
 
 
-@app.get("/api/applications/{app_id}/interviews")
+@api_router.get("/applications/{app_id}/interviews")
 def list_application_interviews(app_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1182,7 +1287,7 @@ def list_application_interviews(app_id: int, current_user: dict = Depends(RoleCh
     return [dict(i) for i in interviews]
 
 
-@app.post("/api/applications/{app_id}/interviews")
+@api_router.post("/applications/{app_id}/interviews")
 def schedule_interview(app_id: int, req: InterviewCreateRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1212,7 +1317,7 @@ def schedule_interview(app_id: int, req: InterviewCreateRequest, current_user: d
     return {"message": "Interview scheduled successfully", "interview_id": interview_id}
 
 
-@app.put("/api/interviews/{interview_id}/feedback")
+@api_router.put("/interviews/{interview_id}/feedback")
 def submit_interview_feedback(interview_id: int, req: InterviewFeedbackRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1240,7 +1345,7 @@ def submit_interview_feedback(interview_id: int, req: InterviewFeedbackRequest, 
     return {"message": "Interview feedback submitted successfully"}
 
 
-@app.get("/api/applications/{app_id}/notes/list")
+@api_router.get("/applications/{app_id}/notes/list")
 def list_recruiter_notes(app_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1263,7 +1368,7 @@ def list_recruiter_notes(app_id: int, current_user: dict = Depends(RoleChecker([
     return res
 
 
-@app.post("/api/applications/{app_id}/notes")
+@api_router.post("/applications/{app_id}/notes")
 def add_recruiter_note(app_id: int, req: RecruiterNoteRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1286,7 +1391,7 @@ def add_recruiter_note(app_id: int, req: RecruiterNoteRequest, current_user: dic
     return {"message": "Recruiter note added successfully", "note_id": note_id}
 
 
-@app.put("/api/notes/{note_id}/pin")
+@api_router.put("/notes/{note_id}/pin")
 def pin_recruiter_note(note_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1305,7 +1410,7 @@ def pin_recruiter_note(note_id: int, current_user: dict = Depends(RoleChecker(['
     return {"message": "Note pinning toggled", "is_pinned": new_pinned}
 
 
-@app.delete("/api/notes/{note_id}")
+@api_router.delete("/notes/{note_id}")
 def delete_recruiter_note(note_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1316,7 +1421,7 @@ def delete_recruiter_note(note_id: int, current_user: dict = Depends(RoleChecker
     return {"message": "Recruiter note deleted successfully"}
 
 
-@app.get("/api/notifications")
+@api_router.get("/notifications")
 def list_notifications(current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1326,7 +1431,7 @@ def list_notifications(current_user: dict = Depends(RoleChecker(['recruiter', 'a
     return [dict(n) for n in notifications]
 
 
-@app.put("/api/notifications/{notification_id}/read")
+@api_router.put("/notifications/{notification_id}/read")
 def mark_notification_read(notification_id: int, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1336,7 +1441,7 @@ def mark_notification_read(notification_id: int, current_user: dict = Depends(Ro
     return {"message": "Notification marked as read"}
 
 
-@app.get("/api/applications/export/excel")
+@api_router.get("/applications/export/excel")
 def list_export_excel(job_id: Optional[int] = None, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1373,3 +1478,103 @@ def list_export_excel(job_id: Optional[int] = None, current_user: dict = Depends
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=hiresense_ats_export_{datetime.utcnow().strftime('%Y%m%d')}.csv"}
     )
+
+
+from fastapi.responses import FileResponse
+import uuid
+
+UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+MAX_FILE_SIZE = 5 * 1024 * 1024 # 5MB
+
+@api_router.post("/auth/refresh", response_model=TokenResponse)
+def refresh_token_endpoint(req: TokenRefreshRequest):
+    from src.auth import verify_refresh_token, create_access_token
+    payload = verify_refresh_token(req.refresh_token)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+        
+    user_id = int(payload["sub"])
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, email, role, name FROM users WHERE id = ?", (user_id,))
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        
+    access_token = create_access_token(data={
+        "sub": str(user["id"]),
+        "email": user["email"],
+        "role": user["role"]
+    })
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": user["role"],
+        "name": user["name"],
+        "email": user["email"],
+        "refresh_token": req.refresh_token
+    }
+
+@api_router.post("/auth/logout")
+def logout_endpoint(req: TokenRefreshRequest, current_user: dict = Depends(get_current_user)):
+    from src.auth import revoke_refresh_token
+    revoke_refresh_token(req.refresh_token)
+    return {"message": "Logged out successfully"}
+
+@api_router.post("/auth/logout/all")
+def logout_all_endpoint(current_user: dict = Depends(get_current_user)):
+    from src.auth import revoke_all_user_refresh_tokens
+    revoke_all_user_refresh_tokens(current_user["id"])
+    return {"message": "Logged out from all devices successfully"}
+
+@api_router.get("/candidates/profile/resume/download/{filename}")
+def download_resume_endpoint(filename: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] == "candidate":
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT resume_filename FROM candidate_profiles WHERE user_id = ?", (current_user["id"],))
+        row = cursor.fetchone()
+        conn.close()
+        if not row or row["resume_filename"] != filename:
+            raise HTTPException(status_code=403, detail="Access denied. You can only download your own resume.")
+            
+    safe_filename = os.path.basename(filename)
+    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Requested resume file not found.")
+        
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
+        (current_user["id"], "download_resume", f"Downloaded resume: {safe_filename}", datetime.utcnow().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    
+    return FileResponse(file_path, media_type="application/octet-stream", filename=safe_filename)
+
+@api_router.get("/health")
+def health_check_endpoint():
+    health_status = {"status": "healthy", "timestamp": datetime.utcnow().isoformat(), "database": "disconnected"}
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        conn.close()
+        health_status["database"] = "connected"
+    except Exception as e:
+        health_status["status"] = "unhealthy"
+        health_status["database_error"] = str(e)
+        
+    return health_status
+
+
+app.include_router(api_router, prefix='/api')
+app.include_router(api_router, prefix='/api/v1')

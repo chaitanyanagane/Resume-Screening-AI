@@ -5,15 +5,32 @@ from datetime import datetime
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../hiresense.db"))
 
+import threading
+
+db_lock = threading.Lock()
+
+class LockedConnection(sqlite3.Connection):
+    def close(self):
+        try:
+            super().close()
+        finally:
+            try:
+                db_lock.release()
+            except RuntimeError:
+                pass
+
 def get_db_connection():
-    """Create a connection to the SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
+    """Create a connection to the SQLite database with foreign keys enabled."""
+    db_lock.acquire()
+    conn = sqlite3.connect(DB_PATH, timeout=15, check_same_thread=False, factory=LockedConnection)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
 def init_db():
     """Initialize database tables and seed sample data."""
     conn = get_db_connection()
+    conn.execute("PRAGMA journal_mode = DELETE;")
     cursor = conn.cursor()
 
     # 1. Users Table
@@ -64,6 +81,7 @@ def init_db():
         inferred_gender TEXT DEFAULT 'Unknown',
         email TEXT,
         phone TEXT,
+        resume_filename TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     )
@@ -217,6 +235,26 @@ def init_db():
         FOREIGN KEY (recruiter_id) REFERENCES users (id) ON DELETE CASCADE
     )
     """)
+
+    # 14. Refresh Tokens Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    )
+    """)
+
+    # Performance Indexes
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_recruiter_id ON jobs(recruiter_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_applications_job_id ON applications(job_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_applications_candidate_profile_id ON applications(candidate_profile_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_interviews_application_id ON interviews(application_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_recruiter_notes_application_id ON recruiter_notes(application_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token ON refresh_tokens(token);")
 
     # Seed Default Users if empty
     cursor.execute("SELECT COUNT(*) FROM users")
@@ -452,7 +490,7 @@ def init_db():
             "ai_complete", 0, now
         ))
 
-        conn.commit()
+    conn.commit()
     conn.close()
 
 if __name__ == "__main__":

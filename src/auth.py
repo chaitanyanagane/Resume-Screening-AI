@@ -72,6 +72,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     cursor = conn.cursor()
     cursor.execute("SELECT id, email, role, name, phone FROM users WHERE id = ?", (user_id,))
     user = cursor.fetchone()
+    conn.commit()
     conn.close()
     
     if user is None:
@@ -91,3 +92,65 @@ class RoleChecker:
                 detail="Operation not permitted for your account role"
             )
         return current_user
+
+
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+def create_refresh_token_in_conn(conn, data: dict) -> str:
+    """Create and insert a refresh token using an existing connection."""
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO refresh_tokens (user_id, token, expires_at, created_at) VALUES (?, ?, ?, ?)",
+        (int(data["sub"]), token, expire.isoformat(), datetime.now(timezone.utc).isoformat())
+    )
+    return token
+
+def create_refresh_token(data: dict) -> str:
+    """Create JWT refresh token."""
+    conn = get_db_connection()
+    token = create_refresh_token_in_conn(conn, data)
+    conn.commit()
+    conn.close()
+    return token
+
+def verify_refresh_token(token: str) -> Optional[dict]:
+    """Decode and validate a refresh token against the database."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != "refresh":
+            return None
+            
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM refresh_tokens WHERE token = ?", (token,))
+        stored = cursor.fetchone()
+        conn.commit()
+        conn.close()
+        
+        if not stored:
+            return None
+            
+        return payload
+    except jwt.PyJWTError:
+        return None
+
+def revoke_refresh_token(token: str):
+    """Delete a refresh token from the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM refresh_tokens WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+
+def revoke_all_user_refresh_tokens(user_id: int):
+    """Delete all refresh tokens for a user (logout from all devices)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM refresh_tokens WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
