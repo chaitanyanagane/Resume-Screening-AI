@@ -10,10 +10,8 @@ services:
     volumes:
       - sqlite-data:/app/data
       - uploads-data:/app/uploads
-    environment:
-      - DATABASE_URL=/app/data/hiresense.db
-      - JWT_SECRET=hiresense_jwt_super_secret_key_change_in_production
-      - CORS_ORIGINS=http://localhost:80,http://localhost:5173
+    env_file:
+      - .env
     restart: always
 
   frontend:

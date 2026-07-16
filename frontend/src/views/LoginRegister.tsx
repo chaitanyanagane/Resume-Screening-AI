@@ -1,6 +1,9 @@
 import React, { useState } from "react";
 import { Shield, AlertCircle } from "lucide-react";
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+
 interface LoginRegisterProps {
   onLoginSuccess: (token: string, role: string, name: string) => void;
   theme: string;
@@ -28,7 +31,7 @@ export default function LoginRegister({ onLoginSuccess }: LoginRegisterProps) {
     try {
       if (isLogin) {
         // Login Flow
-        const response = await fetch("http://localhost:8000/api/auth/login", {
+        const response = await fetch(`${API_BASE}/api/auth/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
@@ -42,7 +45,7 @@ export default function LoginRegister({ onLoginSuccess }: LoginRegisterProps) {
         onLoginSuccess(data.access_token, data.role, data.name);
       } else {
         // Registration Flow
-        const response = await fetch("http://localhost:8000/api/auth/register", {
+        const response = await fetch(`${API_BASE}/api/auth/register`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password, name, phone, role }),

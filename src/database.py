@@ -1,23 +1,32 @@
 import sqlite3
 import os
 import bcrypt
-from datetime import datetime
+from datetime import datetime, timezone
 
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../hiresense.db"))
+DB_PATH = os.environ.get("DATABASE_URL", os.path.abspath(os.path.join(os.path.dirname(__file__), "../hiresense.db")))
 
 import threading
 
 db_lock = threading.Lock()
 
 class LockedConnection(sqlite3.Connection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._is_closed = False
+
     def close(self):
-        try:
-            super().close()
-        finally:
+        if not self._is_closed:
+            self._is_closed = True
             try:
-                db_lock.release()
-            except RuntimeError:
-                pass
+                super().close()
+            finally:
+                try:
+                    db_lock.release()
+                except RuntimeError:
+                    pass
+
+    def __del__(self):
+        self.close()
 
 def get_db_connection():
     """Create a connection to the SQLite database with foreign keys enabled."""
@@ -260,7 +269,7 @@ def init_db():
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
         print("[DB] Seeding default users...")
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Hash passwords
         admin_pw = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode('utf-8')

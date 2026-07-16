@@ -21,7 +21,7 @@ def extract_text_from_pdf(file_path: str) -> str:
                 text += page.extract_text() or ""
         return text
     except Exception as e:
-        return f"[PDF extraction error: {e}]"
+        raise ValueError(f"PDF extraction error: {e}")
 
 
 def extract_text_from_docx(file_path: str) -> str:
@@ -31,7 +31,7 @@ def extract_text_from_docx(file_path: str) -> str:
         doc = docx.Document(file_path)
         return "\n".join([para.text for para in doc.paragraphs])
     except Exception as e:
-        return f"[DOCX extraction error: {e}]"
+        raise ValueError(f"DOCX extraction error: {e}")
 
 
 def extract_text(file_path: str) -> str:

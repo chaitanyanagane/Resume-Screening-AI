@@ -1,8 +1,9 @@
+import uuid
 import os
 import json
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status, Form, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
@@ -15,18 +16,25 @@ from src.bias_auditor import infer_gender
 from src.exporter import export_applications_csv, generate_candidate_text_report
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 import logging
 import time
 from src.security import api_limiter, auth_limiter
 
-app = FastAPI(title="HireSense AI API", version="1.0.0")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(title="HireSense AI API", version="1.0.0", lifespan=lifespan)
 api_router = APIRouter()
 
 # CORS config
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict to React origin (e.g. http://localhost:5173)
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(","), # In production, restrict to React origin (e.g. http://localhost:5173)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -90,7 +98,7 @@ class TelemetryASGIMiddleware:
                 client = scope.get("client")
                 client_ip = client[0] if client else "unknown"
                 log_dict = {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "client_ip": client_ip,
                     "method": scope.get("method", "UNKNOWN"),
                     "path": path,
@@ -105,10 +113,7 @@ class TelemetryASGIMiddleware:
 
 app.add_middleware(TelemetryASGIMiddleware)
 
-# Startup DB initialization
-@app.on_event("startup")
-def startup_event():
-    init_db()
+
 
 # ─── Pydantic Request/Response Models ─────────────────────────────────────────
 
@@ -200,6 +205,9 @@ def register(req: RegisterRequest):
     if req.role not in ['candidate', 'recruiter', 'admin']:
         raise HTTPException(status_code=400, detail="Invalid account role selection")
         
+    if len(req.password) < 8 or not any(char.isdigit() for char in req.password) or not any(char.isalpha() for char in req.password):
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long and contain both letters and numbers.")
+        
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -210,7 +218,7 @@ def register(req: RegisterRequest):
         raise HTTPException(status_code=400, detail="Email address already registered")
         
     hashed_pw = hash_password(req.password)
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     
     cursor.execute(
         "INSERT INTO users (email, password_hash, role, name, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -255,7 +263,7 @@ def login(req: LoginRequest):
     # Log login activity
     cursor.execute(
         "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-        (user["id"], "login", "User logged in", datetime.utcnow().isoformat())
+        (user["id"], "login", "User logged in", datetime.now(timezone.utc).isoformat())
     )
     
     conn.commit()
@@ -309,7 +317,7 @@ def list_jobs(current_user: dict = Depends(get_current_user)):
 def create_job(req: JobCreateRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     
     cursor.execute(
         "INSERT INTO jobs (title, description, skills_required, experience_required, education_required, location, status, recruiter_id, department, employment_type, salary_range, preferred_skills, responsibilities, hiring_manager, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -365,7 +373,7 @@ def delete_job(job_id: int, current_user: dict = Depends(RoleChecker(['recruiter
     # Log activity
     cursor.execute(
         "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-        (current_user["id"], "delete_job", f"Deleted job post: {job['title']}", datetime.utcnow().isoformat())
+        (current_user["id"], "delete_job", f"Deleted job post: {job['title']}", datetime.now(timezone.utc).isoformat())
     )
     
     conn.commit()
@@ -400,7 +408,7 @@ def edit_job(job_id: int, req: JobCreateRequest, current_user: dict = Depends(Ro
         json.dumps(req.responsibilities), req.hiring_manager, job_id
     ))
     
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
         (current_user["id"], "edit_job", f"Edited job post: {req.title}", now)
@@ -437,7 +445,7 @@ def duplicate_job(job_id: int, current_user: dict = Depends(RoleChecker(['recrui
         conn.close()
         raise HTTPException(status_code=403, detail="Unauthorized duplicate operation")
         
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     new_title = f"{job['title']} (Copy)"
     
     cursor.execute("""
@@ -499,7 +507,7 @@ def toggle_job_status(job_id: int, status: str, current_user: dict):
         
     cursor.execute("UPDATE jobs SET status = ? WHERE id = ?", (status, job_id))
     
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     action = "close_job" if status == "closed" else "reopen_job"
     details = f"Closed hiring for: {job['title']}" if status == "closed" else f"Reopened hiring for: {job['title']}"
     cursor.execute(
@@ -556,7 +564,7 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
         # Save to database
         conn = get_db_connection()
         cursor = conn.cursor()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         cursor.execute("""
             INSERT INTO candidate_profiles (user_id, resume_text, skills, education_level, years_experience, inferred_gender, email, phone, resume_filename, created_at)
@@ -681,94 +689,101 @@ def apply_to_job(req: ApplicationApplyRequest, current_user: dict = Depends(Role
     
     recruiter_notes = res["explanation"]["recruiter_notes"]
 
-    now = datetime.utcnow().isoformat()
-    cursor.execute(
-        "INSERT INTO applications (job_id, candidate_profile_id, status, score, score_breakdown, explanation, notes, interview_questions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            req.job_id, profile_id, "applied", res["final_score"],
-            json.dumps(res["score_breakdown"]), json.dumps(res["explanation"]),
-            recruiter_notes, json.dumps(questions), now
+    now = datetime.now(timezone.utc).isoformat()
+    
+    try:
+        cursor.execute(
+            "INSERT INTO applications (job_id, candidate_profile_id, status, score, score_breakdown, explanation, notes, interview_questions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                req.job_id, profile_id, "applied", res["final_score"],
+                json.dumps(res["score_breakdown"]), json.dumps(res["explanation"]),
+                recruiter_notes, json.dumps(questions), now
+            )
         )
-    )
-    app_id = cursor.lastrowid
-    
-    # 1. Insert into resume_analyses
-    cursor.execute("""
-        INSERT INTO resume_analyses (candidate_profile_id, summary, strengths, weaknesses, linkedin, github, projects, certifications, languages, resume_quality, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        profile_id,
-        res["explanation"]["summary"],
-        json.dumps(res["explanation"]["strengths"]),
-        json.dumps(res["explanation"]["weaknesses"]),
-        res["parsed"]["linkedin"],
-        res["parsed"]["github"],
-        json.dumps(res["parsed"]["projects"]),
-        json.dumps(res["parsed"]["certifications"]),
-        json.dumps(res["parsed"]["languages"]),
-        f"Contact verification matched. Structural quality score: {res['score_breakdown']['resume_quality_score']}/100.",
-        now
-    ))
+        app_id = cursor.lastrowid
+        
+        # 1. Insert into resume_analyses
+        cursor.execute("""
+            INSERT INTO resume_analyses (candidate_profile_id, summary, strengths, weaknesses, linkedin, github, projects, certifications, languages, resume_quality, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            profile_id,
+            res["explanation"]["summary"],
+            json.dumps(res["explanation"]["strengths"]),
+            json.dumps(res["explanation"]["weaknesses"]),
+            res["parsed"]["linkedin"],
+            res["parsed"]["github"],
+            json.dumps(res["parsed"]["projects"]),
+            json.dumps(res["parsed"]["certifications"]),
+            json.dumps(res["parsed"]["languages"]),
+            f"Contact verification matched. Structural quality score: {res['score_breakdown']['resume_quality_score']}/100.",
+            now
+        ))
 
-    # 2. Insert into skill_matches
-    cursor.execute("""
-        INSERT INTO skill_matches (application_id, required_skills, present_skills, missing_skills, learning_recommendations, semantic_overlap_pct)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        app_id,
-        json.dumps(res["score_breakdown"]["required_skills"]),
-        json.dumps(res["score_breakdown"]["present_skills"]),
-        json.dumps(res["score_breakdown"]["missing_skills"]),
-        json.dumps(res["explanation"]["learning_recommendations"]),
-        res["score_breakdown"]["tfidf_score"]
-    ))
+        # 2. Insert into skill_matches
+        cursor.execute("""
+            INSERT INTO skill_matches (application_id, required_skills, present_skills, missing_skills, learning_recommendations, semantic_overlap_pct)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            app_id,
+            json.dumps(res["score_breakdown"]["required_skills"]),
+            json.dumps(res["score_breakdown"]["present_skills"]),
+            json.dumps(res["score_breakdown"]["missing_skills"]),
+            json.dumps(res["explanation"]["learning_recommendations"]),
+            res["score_breakdown"]["tfidf_score"]
+        ))
 
-    # 3. Insert into candidate_rankings
-    cursor.execute("SELECT COUNT(*) FROM applications WHERE job_id = ?", (req.job_id,))
-    count_apps = cursor.fetchone()[0]
-    cursor.execute("""
-        INSERT INTO candidate_rankings (job_id, application_id, rank_position, ats_score, skill_match_pct, recommendation, confidence_score)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        req.job_id,
-        app_id,
-        count_apps,
-        res["final_score"],
-        res["score_breakdown"]["skills_score"],
-        res["explanation"]["hiring_recommendation"],
-        res["explanation"]["confidence_score"]
-    ))
+        # 3. Insert into candidate_rankings
+        cursor.execute("SELECT COUNT(*) FROM applications WHERE job_id = ?", (req.job_id,))
+        count_apps = cursor.fetchone()[0]
+        cursor.execute("""
+            INSERT INTO candidate_rankings (job_id, application_id, rank_position, ats_score, skill_match_pct, recommendation, confidence_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            req.job_id,
+            app_id,
+            count_apps,
+            res["final_score"],
+            res["score_breakdown"]["skills_score"],
+            res["explanation"]["hiring_recommendation"],
+            res["explanation"]["confidence_score"]
+        ))
 
-    # 4. Insert into interview_recommendations
-    cursor.execute("""
-        INSERT INTO interview_recommendations (application_id, status, explanation)
-        VALUES (?, ?, ?)
-    """, (
-        app_id,
-        res["explanation"]["hiring_recommendation"],
-        res["explanation"]["recommendation_explanation"]
-    ))
+        # 4. Insert into interview_recommendations
+        cursor.execute("""
+            INSERT INTO interview_recommendations (application_id, status, explanation)
+            VALUES (?, ?, ?)
+        """, (
+            app_id,
+            res["explanation"]["hiring_recommendation"],
+            res["explanation"]["recommendation_explanation"]
+        ))
 
-    # 5. Insert into ai_interview_questions
-    cursor.execute("""
-        INSERT INTO ai_interview_questions (application_id, technical_questions, behavioral_questions, project_questions, coding_questions)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        app_id,
-        json.dumps(res["explanation"]["categorized_questions"]["technical"]),
-        json.dumps(res["explanation"]["categorized_questions"]["behavioral"]),
-        json.dumps(res["explanation"]["categorized_questions"]["project"]),
-        json.dumps(res["explanation"]["categorized_questions"]["coding"])
-    ))
-    
-    # Log activity
-    cursor.execute(
-        "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-        (current_user["id"], "apply_job", f"Applied to job: {job['title']}", now)
-    )
-    
-    conn.commit()
-    conn.close()
+        # 5. Insert into ai_interview_questions
+        cursor.execute("""
+            INSERT INTO ai_interview_questions (application_id, technical_questions, behavioral_questions, project_questions, coding_questions)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            app_id,
+            json.dumps(res["explanation"]["categorized_questions"]["technical"]),
+            json.dumps(res["explanation"]["categorized_questions"]["behavioral"]),
+            json.dumps(res["explanation"]["categorized_questions"]["project"]),
+            json.dumps(res["explanation"]["categorized_questions"]["coding"])
+        ))
+        
+        # Log activity
+        cursor.execute(
+            "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
+            (current_user["id"], "apply_job", f"Applied to job: {job['title']}", now)
+        )
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to submit application due to a database error: {str(e)}")
+    finally:
+        conn.close()
+        
     return {"message": "Application submitted successfully", "application_id": app_id}
 
 @api_router.get("/applications")
@@ -866,7 +881,7 @@ def update_application_status(app_id: int, req: ApplicationStatusUpdate, current
     # Log activity
     cursor.execute(
         "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-        (current_user["id"], "update_status", f"Updated status of candidate {data['candidate_name']} for {data['job_title']} to {req.status}", datetime.utcnow().isoformat())
+        (current_user["id"], "update_status", f"Updated status of candidate {data['candidate_name']} for {data['job_title']} to {req.status}", datetime.now(timezone.utc).isoformat())
     )
     
     conn.commit()
@@ -1266,7 +1281,7 @@ def update_application_stage(app_id: int, req: ApplicationStageRequest, current_
     cursor.execute("UPDATE applications SET status = ? WHERE id = ?", (req.stage, app_id))
     
     # Log activity
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
         (current_user["id"], "update_stage", f"Moved application {app_id} from {app['status']} to {req.stage}", now)
@@ -1291,7 +1306,7 @@ def list_application_interviews(app_id: int, current_user: dict = Depends(RoleCh
 def schedule_interview(app_id: int, req: InterviewCreateRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     
     cursor.execute("""
         INSERT INTO interviews (application_id, interviewer, type, scheduled_at, meeting_link, status, created_at)
@@ -1334,7 +1349,7 @@ def submit_interview_feedback(interview_id: int, req: InterviewFeedbackRequest, 
         WHERE id = ?
     """, (req.status, req.feedback, req.rating, interview_id))
     
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
         (current_user["id"], "interview_feedback", f"Recorded feedback for interview {interview_id}", now)
@@ -1372,7 +1387,7 @@ def list_recruiter_notes(app_id: int, current_user: dict = Depends(RoleChecker([
 def add_recruiter_note(app_id: int, req: RecruiterNoteRequest, current_user: dict = Depends(RoleChecker(['recruiter', 'admin']))):
     conn = get_db_connection()
     cursor = conn.cursor()
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     
     cursor.execute("""
         INSERT INTO recruiter_notes (application_id, recruiter_id, note_text, is_pinned, mentions, created_at)
@@ -1476,12 +1491,10 @@ def list_export_excel(job_id: Optional[int] = None, current_user: dict = Depends
     return Response(
         content=output,
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=hiresense_ats_export_{datetime.utcnow().strftime('%Y%m%d')}.csv"}
+        headers={"Content-Disposition": f"attachment; filename=hiresense_ats_export_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"}
     )
 
 
-from fastapi.responses import FileResponse
-import uuid
 
 UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "uploads"))
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -1544,7 +1557,9 @@ def download_resume_endpoint(filename: str, current_user: dict = Depends(get_cur
             raise HTTPException(status_code=403, detail="Access denied. You can only download your own resume.")
             
     safe_filename = os.path.basename(filename)
-    file_path = os.path.join(UPLOAD_DIR, safe_filename)
+    file_path = os.path.realpath(os.path.join(UPLOAD_DIR, safe_filename))
+    if not file_path.startswith(os.path.realpath(UPLOAD_DIR)):
+        raise HTTPException(status_code=403, detail="Invalid file path.")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Requested resume file not found.")
         
@@ -1552,7 +1567,7 @@ def download_resume_endpoint(filename: str, current_user: dict = Depends(get_cur
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO activity_logs (user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-        (current_user["id"], "download_resume", f"Downloaded resume: {safe_filename}", datetime.utcnow().isoformat())
+        (current_user["id"], "download_resume", f"Downloaded resume: {safe_filename}", datetime.now(timezone.utc).isoformat())
     )
     conn.commit()
     conn.close()
@@ -1561,7 +1576,7 @@ def download_resume_endpoint(filename: str, current_user: dict = Depends(get_cur
 
 @api_router.get("/health")
 def health_check_endpoint():
-    health_status = {"status": "healthy", "timestamp": datetime.utcnow().isoformat(), "database": "disconnected"}
+    health_status = {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat(), "database": "disconnected"}
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1576,5 +1591,4 @@ def health_check_endpoint():
     return health_status
 
 
-app.include_router(api_router, prefix='/api')
 app.include_router(api_router, prefix='/api/v1')

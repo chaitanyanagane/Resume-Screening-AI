@@ -4,11 +4,11 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from typing import List, Optional
-import sqlite3
+import os
 from src.database import get_db_connection
 
 # JWT config
-SECRET_KEY = "hiresense_jwt_super_secret_key_change_in_production"
+SECRET_KEY = os.environ.get("JWT_SECRET", "hiresense_jwt_super_secret_key_change_in_production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
 
@@ -72,7 +72,6 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     cursor = conn.cursor()
     cursor.execute("SELECT id, email, role, name, phone FROM users WHERE id = ?", (user_id,))
     user = cursor.fetchone()
-    conn.commit()
     conn.close()
     
     if user is None:

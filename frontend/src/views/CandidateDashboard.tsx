@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { Upload, FileText, Clock } from "lucide-react";
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+
 interface CandidateDashboardProps {
   token: string;
 }
@@ -19,21 +22,21 @@ export default function CandidateDashboard({ token }: CandidateDashboardProps) {
   const fetchData = async () => {
     try {
       // 1. Candidate Profile
-      const profRes = await fetch("http://localhost:8000/api/candidates/profile", {
+      const profRes = await fetch(`${API_BASE}/api/candidates/profile`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const profData = await profRes.json();
       setProfile(profData.has_profile ? profData : null);
 
       // 2. Browse Jobs list
-      const jobsRes = await fetch("http://localhost:8000/api/jobs", {
+      const jobsRes = await fetch(`${API_BASE}/api/jobs`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const jobsData = await jobsRes.json();
       setJobs(jobsData);
 
       // 3. Applications
-      const appsRes = await fetch("http://localhost:8000/api/applications", {
+      const appsRes = await fetch(`${API_BASE}/api/applications`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const appsData = await appsRes.json();
@@ -60,7 +63,7 @@ export default function CandidateDashboard({ token }: CandidateDashboardProps) {
     formData.append("file", file);
 
     try {
-      const res = await fetch("http://localhost:8000/api/candidates/profile/upload", {
+      const res = await fetch(`${API_BASE}/api/candidates/profile/upload`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` },
         body: formData,
@@ -84,7 +87,7 @@ export default function CandidateDashboard({ token }: CandidateDashboardProps) {
   const handleApply = async (jobId: number) => {
     setApplyLoading(jobId.toString());
     try {
-      const res = await fetch("http://localhost:8000/api/applications", {
+      const res = await fetch(`${API_BASE}/api/applications`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",

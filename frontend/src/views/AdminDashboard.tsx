@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { Activity } from "lucide-react";
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+
 interface AdminDashboardProps {
   token: string;
 }
@@ -15,21 +18,21 @@ export default function AdminDashboard({ token }: AdminDashboardProps) {
   const fetchData = async () => {
     try {
       // 1. Fetch users list
-      const usersRes = await fetch("http://localhost:8000/api/admin/users", {
+      const usersRes = await fetch(`${API_BASE}/api/admin/users`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const usersData = await usersRes.json();
       setUsers(usersData);
 
       // 2. Fetch logs list
-      const logsRes = await fetch("http://localhost:8000/api/admin/logs", {
+      const logsRes = await fetch(`${API_BASE}/api/admin/logs`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const logsData = await logsRes.json();
       setLogs(logsData);
 
       // 3. Fetch analytics telemetry
-      const analRes = await fetch("http://localhost:8000/api/analytics", {
+      const analRes = await fetch(`${API_BASE}/api/analytics`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const analData = await analRes.json();

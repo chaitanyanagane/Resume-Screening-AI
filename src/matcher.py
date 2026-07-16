@@ -92,17 +92,7 @@ class BERTMatcher:
 
 # ─── Hybrid Scorer ───────────────────────────────────────────────────────────
 
-class HybridMatcher:
-    """
-    Combines TF-IDF (keyword) and BERT (semantic) scores.
-    Architecture recommended in the seminar report.
-    """
 
-    def __init__(self, tfidf_weight: float = 0.4, bert_weight: float = 0.6):
-        self.tfidf = TFIDFMatcher()
-        self.bert = BERTMatcher()
-        self.tfidf_weight = tfidf_weight
-        self.bert_weight = bert_weight
 
 SEMANTIC_ASSOCIATIONS = {
     # Required Tech -> Related Candidate Skills

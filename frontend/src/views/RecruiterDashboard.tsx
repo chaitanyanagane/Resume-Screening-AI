@@ -7,6 +7,8 @@ import {
   List, Send
 } from "lucide-react";
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
 interface RecruiterDashboardProps {
   token: string;
 }
@@ -94,7 +96,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
   const fetchData = async () => {
     try {
       // 1. Fetch jobs list
-      const jobsRes = await fetch("http://localhost:8000/api/jobs", {
+      const jobsRes = await fetch(`${API_BASE}/api/jobs`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (jobsRes.ok) {
@@ -103,7 +105,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
       }
 
       // 2. Fetch candidates applications list
-      const appsRes = await fetch("http://localhost:8000/api/applications", {
+      const appsRes = await fetch(`${API_BASE}/api/applications`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (appsRes.ok) {
@@ -112,7 +114,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
       }
 
       // 3. Fetch analytics telemetry
-      const analRes = await fetch("http://localhost:8000/api/analytics", {
+      const analRes = await fetch(`${API_BASE}/api/analytics`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (analRes.ok) {
@@ -121,7 +123,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
       }
 
       // 4. Fetch notifications
-      const notifRes = await fetch("http://localhost:8000/api/notifications", {
+      const notifRes = await fetch(`${API_BASE}/api/notifications`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (notifRes.ok) {
@@ -130,7 +132,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
       }
 
       // 5. Fetch Activity Logs
-      const logsRes = await fetch("http://localhost:8000/api/admin/logs", {
+      const logsRes = await fetch(`${API_BASE}/api/admin/logs`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (logsRes.ok) {
@@ -164,7 +166,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
 
   const fetchAppInterviews = async (appId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/applications/${appId}/interviews`, {
+      const res = await fetch(`${API_BASE}/api/applications/${appId}/interviews`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (res.ok) {
@@ -176,7 +178,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
 
   const fetchAppNotes = async (appId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/applications/${appId}/notes/list`, {
+      const res = await fetch(`${API_BASE}/api/applications/${appId}/notes/list`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       if (res.ok) {
@@ -213,7 +215,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
       let res;
       if (editingJobId) {
         // Edit job
-        res = await fetch(`http://localhost:8000/api/jobs/${editingJobId}`, {
+        res = await fetch(`${API_BASE}/api/jobs/${editingJobId}`, {
           method: "PUT",
           headers: { 
             "Content-Type": "application/json",
@@ -223,7 +225,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
         });
       } else {
         // Create job
-        res = await fetch("http://localhost:8000/api/jobs", {
+        res = await fetch(`${API_BASE}/api/jobs`, {
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
@@ -283,7 +285,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
 
   const handleDuplicateJob = async (jobId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/jobs/${jobId}/duplicate`, {
+      const res = await fetch(`${API_BASE}/api/jobs/${jobId}/duplicate`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -298,7 +300,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
   const handleToggleJobStatus = async (jobId: number, currentStatus: string) => {
     const action = currentStatus === "active" ? "close" : "reopen";
     try {
-      const res = await fetch(`http://localhost:8000/api/jobs/${jobId}/${action}`, {
+      const res = await fetch(`${API_BASE}/api/jobs/${jobId}/${action}`, {
         method: "PUT",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -313,7 +315,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
   const handleDeleteJob = async (jobId: number) => {
     if (!confirm("Are you sure you want to delete this job opening? All associated applicant evaluations and records will be deleted permanently.")) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/jobs/${jobId}`, {
+      const res = await fetch(`${API_BASE}/api/jobs/${jobId}`, {
         method: "DELETE",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -336,7 +338,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
     }
 
     try {
-      const res = await fetch(`http://localhost:8000/api/applications/${appId}/stage`, {
+      const res = await fetch(`${API_BASE}/api/applications/${appId}/stage`, {
         method: "PUT",
         headers: { 
           "Content-Type": "application/json",
@@ -358,7 +360,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
     e.preventDefault();
     if (!selectedApp) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/applications/${selectedApp.id}/interviews`, {
+      const res = await fetch(`${API_BASE}/api/applications/${selectedApp.id}/interviews`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -389,7 +391,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
     e.preventDefault();
     if (!feedbackIntId || !selectedApp) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/interviews/${feedbackIntId}/feedback`, {
+      const res = await fetch(`${API_BASE}/api/interviews/${feedbackIntId}/feedback`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -419,7 +421,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
     if (!selectedApp) return;
     try {
       const mentionsArray = newNoteMentions.split(",").map(m => m.trim()).filter(m => m);
-      const res = await fetch(`http://localhost:8000/api/applications/${selectedApp.id}/notes`, {
+      const res = await fetch(`${API_BASE}/api/applications/${selectedApp.id}/notes`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -445,7 +447,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
 
   const handleTogglePinNote = async (noteId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/notes/${noteId}/pin`, {
+      const res = await fetch(`${API_BASE}/api/notes/${noteId}/pin`, {
         method: "PUT",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -460,7 +462,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
   const handleDeleteNote = async (noteId: number) => {
     if (!confirm("Delete this recruiter note?")) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/notes/${noteId}`, {
+      const res = await fetch(`${API_BASE}/api/notes/${noteId}`, {
         method: "DELETE",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -483,7 +485,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
 
   const handleMarkNotificationRead = async (notifId: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/notifications/${notifId}/read`, {
+      const res = await fetch(`${API_BASE}/api/notifications/${notifId}/read`, {
         method: "PUT",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -495,8 +497,8 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
 
   const handleDownloadCSV = () => {
     const url = selectedJob === "all" 
-      ? "http://localhost:8000/api/applications/export/excel" 
-      : `http://localhost:8000/api/applications/export/excel?job_id=${selectedJob}`;
+      ? `${API_BASE}/api/applications/export/excel` 
+      : `${API_BASE}/api/applications/export/excel?job_id=${selectedJob}`;
     window.open(url, "_blank");
     showToast("Exporting ATS applications CSV list...", "info");
   };
@@ -1135,7 +1137,7 @@ export default function RecruiterDashboard({ token }: RecruiterDashboardProps) {
                               <button className="btn-secondary" style={{ padding: "0.35rem 0.55rem" }} onClick={() => setSelectedApp(app)}>
                                 <Eye size={14} />
                               </button>
-                              <a href={`http://localhost:8000/api/applications/${app.id}/export/report`} target="_blank" rel="noreferrer" className="btn-secondary" style={{ padding: "0.35rem 0.55rem" }} title="Download Report">
+                              <a href={`${API_BASE}/api/applications/${app.id}/export/report`} target="_blank" rel="noreferrer" className="btn-secondary" style={{ padding: "0.35rem 0.55rem" }} title="Download Report">
                                 <FileText size={14} />
                               </a>
                             </div>

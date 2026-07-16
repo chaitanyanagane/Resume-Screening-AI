@@ -1,7 +1,4 @@
 import time
-import re
-from fastapi import Request, HTTPException, status
-from collections import defaultdict
 from typing import Dict, Tuple
 
 class RateLimiter:
@@ -35,16 +32,3 @@ api_limiter = RateLimiter(rate=60.0 / 60.0, capacity=60)
 # 10 requests per minute capacity for auth/upload
 auth_limiter = RateLimiter(rate=10.0 / 60.0, capacity=10)
 
-def sanitize_text(text: str) -> str:
-    """Sanitize string inputs to prevent XSS payloads by escaping HTML special chars."""
-    if not isinstance(text, str):
-        return text
-    escapes = {
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#x27;',
-        '/': '&#x2F;'
-    }
-    return "".join(escapes.get(char, char) for char in text)
