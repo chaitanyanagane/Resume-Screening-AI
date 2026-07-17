@@ -1,16 +1,12 @@
-# Core ML
+# Core matching and analytics
 scikit-learn>=1.3.0
 numpy>=1.24.0
 pandas>=2.0.0
-xgboost>=2.0.0
 
-# NLP
-sentence-transformers>=2.2.0   # for BERT embeddings
-# spacy>=3.6.0                 # optional: for advanced NER
-# nltk>=3.8.0                  # optional: stopwords
-
-# Explainability
-shap>=0.45.0
+# Optional ML extras (Sentence-BERT, XGBoost, and SHAP) are deliberately not
+# installed in the serverless runtime. The application uses its built-in
+# TF-IDF matcher and rule-based explanations whenever they are unavailable.
+# This keeps deployment artifacts small and avoids native/CUDA dependencies.
 
 # Bias / Fairness
 fairlearn>=0.10.0
