@@ -38,7 +38,8 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          # Vite 8 requires Node.js 20.19+ or 22.12+.
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
