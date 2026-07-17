@@ -1,27 +1,15 @@
-# Core matching and analytics
+# Runtime matching and analytics
 scikit-learn>=1.3.0
 numpy>=1.24.0
 pandas>=2.0.0
 
-# Optional ML extras (Sentence-BERT, XGBoost, and SHAP) are deliberately not
-# installed in the serverless runtime. The application uses its built-in
-# TF-IDF matcher and rule-based explanations whenever they are unavailable.
-# This keeps deployment artifacts small and avoids native/CUDA dependencies.
-
-# Bias / Fairness
-fairlearn>=0.10.0
-# aif360>=0.5.0                # optional: IBM toolkit (heavier install)
+# The API uses TF-IDF matching and rule-based explanations. SHAP, Numba,
+# llvmlite, XGBoost, Sentence-Transformers, PyTorch, and CUDA packages are not
+# required at runtime and are intentionally excluded from this deployment set.
 
 # Resume Parsing
 PyPDF2>=3.0.0
 python-docx>=1.1.0
-
-# UI
-streamlit>=1.35.0
-
-# Utilities
-matplotlib>=3.7.0
-seaborn>=0.12.0
 
 # API & Auth
 fastapi>=0.110.0
@@ -29,3 +17,4 @@ uvicorn[standard]>=0.28.0
 pyjwt>=2.8.0
 bcrypt>=4.1.0
 python-multipart>=0.0.9
+email-validator>=2.0.0

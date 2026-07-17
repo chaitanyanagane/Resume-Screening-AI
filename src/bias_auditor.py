@@ -4,9 +4,8 @@ Implements:
  - Blind screening (remove protected attributes)
  - Demographic Parity Difference measurement
  - Equal Opportunity measurement
- - SHAP-based proxy feature detection (conceptual)
 
-As per the seminar report, uses Fairlearn-style metrics.
+Uses lightweight, in-process calculations for fairness metrics.
 No real demographic data is assumed — this module shows HOW
 bias would be detected and reported.
 """

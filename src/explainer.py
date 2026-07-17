@@ -1,6 +1,5 @@
 """
 Stage 6: Explainability
-- SHAP-based feature attribution for each candidate's score
 - Human-readable explanation report
 - Proxy feature detection
 """
@@ -339,38 +338,6 @@ def _get_improvement_tips(candidate: Dict, jd_text: str) -> List[str]:
         tips.append("Strong profile! Ensure your resume is ATS-friendly (no tables or images).")
 
     return tips
-
-
-# ─── SHAP Explainability (when ML model is trained) ──────────────────────────
-
-def explain_with_shap(model, X_test, feature_names: List[str], candidate_idx: int = 0):
-    """
-    Generate SHAP waterfall plot for one candidate.
-    Call this after training XGBoost model.
-    
-    Returns shap_values array and a text summary.
-    """
-    try:
-        import shap
-        explainer = shap.Explainer(model)
-        shap_values = explainer(X_test)
-
-        # Text summary of top features
-        sv = shap_values[candidate_idx].values
-        top_idx = np.argsort(np.abs(sv))[::-1][:5]
-        summary = []
-        for i in top_idx:
-            direction = "↑ increases" if sv[i] > 0 else "↓ decreases"
-            summary.append(
-                f"  • {feature_names[i]}: {direction} score by {abs(sv[i]):.3f}"
-            )
-
-        return shap_values, "\n".join(summary)
-
-    except ImportError:
-        return None, "SHAP not installed. Run: pip install shap"
-    except Exception as e:
-        return None, f"SHAP explanation failed: {e}"
 
 
 # ─── Proxy Feature Detection ─────────────────────────────────────────────────
