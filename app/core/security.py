@@ -31,4 +31,3 @@ class RateLimiter:
 api_limiter = RateLimiter(rate=60.0 / 60.0, capacity=60)
 # 10 requests per minute capacity for auth/upload
 auth_limiter = RateLimiter(rate=10.0 / 60.0, capacity=10)
-

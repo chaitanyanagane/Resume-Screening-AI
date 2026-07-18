@@ -1,23 +1,37 @@
+"""
+Authentication utilities — JWT, bcrypt, role-based access control.
+
+Refactored to use SQLAlchemy sessions instead of raw sqlite3.
+All JWT logic, bcrypt hashing, and token management is preserved identically.
+"""
+
 import jwt
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
 from typing import List, Optional
-import os
-from src.database import get_db_connection
 
-# JWT config
-SECRET_KEY = os.environ.get("JWT_SECRET", "hiresense_jwt_super_secret_key_change_in_production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
+from app.core.config import settings
+from app.core.database import get_db
+
+# ── JWT configuration (reads from centralised settings) ─────────────────
+SECRET_KEY = settings.JWT_SECRET
+ALGORITHM = settings.JWT_ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+REFRESH_TOKEN_EXPIRE_DAYS = settings.REFRESH_TOKEN_EXPIRE_DAYS
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+
+# ── Password helpers ────────────────────────────────────────────────────
 
 def hash_password(password: str) -> str:
     """Hash password using bcrypt."""
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+
 
 def verify_password(password: str, hashed_password: str) -> bool:
     """Verify password against hashed password."""
@@ -25,6 +39,9 @@ def verify_password(password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
     except Exception:
         return False
+
+
+# ── Access-token helpers ────────────────────────────────────────────────
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create JWT access token using timezone-aware UTC datetime."""
@@ -36,6 +53,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
 def decode_access_token(token: str) -> Optional[dict]:
     """Decode and validate JWT access token."""
     try:
@@ -44,8 +62,16 @@ def decode_access_token(token: str) -> Optional[dict]:
     except jwt.PyJWTError:
         return None
 
-def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+
+# ── Current-user dependency ─────────────────────────────────────────────
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> dict:
     """Dependency to retrieve currently authenticated user."""
+    from app.models.user import User  # deferred to avoid circular imports
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -54,33 +80,39 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     payload = decode_access_token(token)
     if payload is None:
         raise credentials_exception
-        
+
     sub_val = payload.get("sub")
     email: str = payload.get("email")
     role: str = payload.get("role")
-    
+
     if sub_val is None or email is None or role is None:
         raise credentials_exception
-        
+
     try:
         user_id = int(sub_val)
     except ValueError:
         raise credentials_exception
-        
-    # Get user details from database
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, email, role, name, phone FROM users WHERE id = ?", (user_id,))
-    user = cursor.fetchone()
-    conn.close()
-    
+
+    # Get user details from database via SQLAlchemy
+    user = db.query(User).filter(User.id == user_id).first()
+
     if user is None:
         raise credentials_exception
-        
-    return dict(user)
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "name": user.name,
+        "phone": user.phone,
+    }
+
+
+# ── Role checker ────────────────────────────────────────────────────────
 
 class RoleChecker:
     """Dependency to enforce role-based access control (RBAC)."""
+
     def __init__(self, allowed_roles: List[str]):
         self.allowed_roles = allowed_roles
 
@@ -88,68 +120,62 @@ class RoleChecker:
         if current_user["role"] not in self.allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Operation not permitted for your account role"
+                detail="Operation not permitted for your account role",
             )
         return current_user
 
 
-REFRESH_TOKEN_EXPIRE_DAYS = 7
+# ── Refresh-token helpers ───────────────────────────────────────────────
 
-def create_refresh_token_in_conn(conn, data: dict) -> str:
-    """Create and insert a refresh token using an existing connection."""
+def create_refresh_token_in_db(db: Session, data: dict) -> str:
+    """Create and persist a refresh token using the provided session."""
+    from app.models.user import RefreshToken  # deferred import
+
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
     token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO refresh_tokens (user_id, token, expires_at, created_at) VALUES (?, ?, ?, ?)",
-        (int(data["sub"]), token, expire.isoformat(), datetime.now(timezone.utc).isoformat())
+
+    db_token = RefreshToken(
+        user_id=int(data["sub"]),
+        token=token,
+        expires_at=expire.isoformat(),
+        created_at=datetime.now(timezone.utc).isoformat(),
     )
+    db.add(db_token)
+    # Caller is responsible for committing (allows transactional grouping)
     return token
 
-def create_refresh_token(data: dict) -> str:
-    """Create JWT refresh token."""
-    conn = get_db_connection()
-    token = create_refresh_token_in_conn(conn, data)
-    conn.commit()
-    conn.close()
-    return token
 
-def verify_refresh_token(token: str) -> Optional[dict]:
+def verify_refresh_token(db: Session, token: str) -> Optional[dict]:
     """Decode and validate a refresh token against the database."""
+    from app.models.user import RefreshToken  # deferred import
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         if payload.get("type") != "refresh":
             return None
-            
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM refresh_tokens WHERE token = ?", (token,))
-        stored = cursor.fetchone()
-        conn.commit()
-        conn.close()
-        
+
+        stored = db.query(RefreshToken).filter(RefreshToken.token == token).first()
         if not stored:
             return None
-            
+
         return payload
     except jwt.PyJWTError:
         return None
 
-def revoke_refresh_token(token: str):
-    """Delete a refresh token from the database."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM refresh_tokens WHERE token = ?", (token,))
-    conn.commit()
-    conn.close()
 
-def revoke_all_user_refresh_tokens(user_id: int):
+def revoke_refresh_token(db: Session, token: str):
+    """Delete a refresh token from the database."""
+    from app.models.user import RefreshToken  # deferred import
+
+    db.query(RefreshToken).filter(RefreshToken.token == token).delete()
+    db.commit()
+
+
+def revoke_all_user_refresh_tokens(db: Session, user_id: int):
     """Delete all refresh tokens for a user (logout from all devices)."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM refresh_tokens WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    from app.models.user import RefreshToken  # deferred import
+
+    db.query(RefreshToken).filter(RefreshToken.user_id == user_id).delete()
+    db.commit()

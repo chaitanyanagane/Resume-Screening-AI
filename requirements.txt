@@ -18,3 +18,8 @@ pyjwt>=2.8.0
 bcrypt>=4.1.0
 python-multipart>=0.0.9
 email-validator>=2.0.0
+
+# Database & Config
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+pydantic-settings>=2.0.0

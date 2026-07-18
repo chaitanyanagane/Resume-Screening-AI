@@ -7,10 +7,10 @@ Connects all 6 stages:
 
 import os
 from typing import List, Dict, Optional
-from src.resume_parser import extract_text, parse_resume
-from src.matcher import HybridMatcher
-from src.bias_auditor import generate_bias_report, blind_screen_text as blind_text
-from src.explainer import explain_score_rules
+from app.ai.resume_parser import extract_text, parse_resume
+from app.ai.matcher import HybridMatcher
+from app.ai.bias_auditor import generate_bias_report, blind_screen_text as blind_text
+from app.ai.explainer import explain_score_rules
 
 
 class ResumeScreeningPipeline:

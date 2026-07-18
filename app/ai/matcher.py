@@ -149,7 +149,7 @@ class HybridMatcher:
             req_exp = jd_requirements.get("experience", 3.0)
             req_edu = jd_requirements.get("education", 3)
         else:
-            from src.resume_parser import SKILLS_KEYWORDS, extract_education_level, extract_years_of_experience
+            from app.ai.resume_parser import SKILLS_KEYWORDS, extract_education_level, extract_years_of_experience
             req_skills = [s for s in SKILLS_KEYWORDS if s in jd_text.lower()]
             req_exp = extract_years_of_experience(jd_text) or 3.0
             req_edu = extract_education_level(jd_text) or 3
