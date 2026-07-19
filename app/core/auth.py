@@ -131,9 +131,10 @@ def create_refresh_token_in_db(db: Session, data: dict) -> str:
     """Create and persist a refresh token using the provided session."""
     from app.models.user import RefreshToken  # deferred import
 
+    import uuid
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire, "type": "refresh"})
+    to_encode.update({"exp": expire, "type": "refresh", "jti": str(uuid.uuid4())})
     token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
     db_token = RefreshToken(

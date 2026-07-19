@@ -3,7 +3,8 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from app.core.database import get_db
-from app.models.user import User, ActivityLog
+from app.models.user import User, RefreshToken
+from app.models.activity_log import ActivityLog
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, TokenRefreshRequest
 from app.core.auth import (
     hash_password,
