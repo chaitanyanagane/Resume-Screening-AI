@@ -13,6 +13,7 @@ import os
 class Settings(BaseSettings):
     """Application settings – every field maps to an env var of the same name."""
 
+    ENVIRONMENT: str = "development"
     # ── Database ────────────────────────────────────────────────────────
     DATABASE_URL: str = "sqlite:///./hiresense.db"
 

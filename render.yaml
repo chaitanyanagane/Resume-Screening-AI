@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: hiresense-api
+    env: docker
+    region: oregon
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: CLOUDINARY_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
