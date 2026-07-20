@@ -23,9 +23,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Python Syntax & Compilation Check
-        run: python -m py_compile main.py src/*.py
-
+      - name: Compile Python
+        run: |
+          python -m compileall app
+        
       - name: Run Backend Tests
         run: |
           PYTHONPATH=. python -m unittest discover -s tests -p "test_*.py" || echo "No tests structured yet"
