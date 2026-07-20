@@ -7,8 +7,13 @@ from app.core.auth import RoleChecker
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 @router.get("")
-def list_notifications(current_user: dict = Depends(RoleChecker(['recruiter', 'admin'])), db: Session = Depends(get_db)):
-    notifications = db.query(Notification).filter(Notification.recruiter_id == current_user["id"]).order_by(Notification.id.desc()).limit(50).all()
+def list_notifications(
+    limit: int = 100,
+    offset: int = 0,
+    current_user: dict = Depends(RoleChecker(['recruiter', 'admin'])), 
+    db: Session = Depends(get_db)
+):
+    notifications = db.query(Notification).filter(Notification.recruiter_id == current_user["id"]).order_by(Notification.id.desc()).offset(offset).limit(limit).all()
     
     res = []
     for n in notifications:

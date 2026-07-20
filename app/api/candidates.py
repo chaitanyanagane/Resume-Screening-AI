@@ -3,7 +3,7 @@ import uuid
 import json
 import time
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from app.models.activity_log import ActivityLog
 from app.core.auth import get_current_user, RoleChecker
 from app.ai.bias_auditor import infer_gender
 from app.ai.resume_parser import extract_text_from_bytes, parse_resume
+from app.core.security import limiter
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
 
@@ -26,7 +27,9 @@ if settings.CLOUDINARY_URL:
 
 
 @router.post("/profile/upload")
+@limiter.limit("5/minute")
 async def upload_resume(
+    request: Request,
     file: UploadFile = File(...),
     current_user: dict = Depends(RoleChecker(['candidate'])),
     db: Session = Depends(get_db)
@@ -39,8 +42,13 @@ async def upload_resume(
     if len(contents) > settings.max_file_size_bytes:
         raise HTTPException(status_code=400, detail="File size exceeds the upload limit.")
         
-    if ext == ".pdf" and not contents.startswith(b"%PDF"):
-        raise HTTPException(status_code=400, detail="Invalid PDF binary payload signature.")
+    # Strict MIME type validation
+    import magic
+    mime_type = magic.from_buffer(contents, mime=True)
+    if ext == ".pdf" and mime_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="File content does not match PDF signature.")
+    if ext == ".txt" and not mime_type.startswith("text/"):
+        raise HTTPException(status_code=400, detail="File content does not match TXT signature.")
         
     # Attempt Cloudinary upload with retries
     secure_url = None

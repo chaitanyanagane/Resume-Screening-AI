@@ -9,8 +9,13 @@ from app.core.auth import RoleChecker
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 @router.get("/users")
-def get_admin_users(current_user: dict = Depends(RoleChecker(['admin'])), db: Session = Depends(get_db)):
-    users = db.query(User).order_by(User.id.desc()).all()
+def get_admin_users(
+    limit: int = 100,
+    offset: int = 0,
+    current_user: dict = Depends(RoleChecker(['admin'])), 
+    db: Session = Depends(get_db)
+):
+    users = db.query(User).order_by(User.id.desc()).offset(offset).limit(limit).all()
     
     res = []
     for u in users:
@@ -25,8 +30,13 @@ def get_admin_users(current_user: dict = Depends(RoleChecker(['admin'])), db: Se
     return res
 
 @router.get("/logs")
-def get_admin_logs(current_user: dict = Depends(RoleChecker(['admin'])), db: Session = Depends(get_db)):
-    logs = db.query(ActivityLog, User).outerjoin(User, ActivityLog.user_id == User.id).order_by(ActivityLog.id.desc()).limit(100).all()
+def get_admin_logs(
+    limit: int = 100,
+    offset: int = 0,
+    current_user: dict = Depends(RoleChecker(['admin'])), 
+    db: Session = Depends(get_db)
+):
+    logs = db.query(ActivityLog, User).outerjoin(User, ActivityLog.user_id == User.id).order_by(ActivityLog.id.desc()).offset(offset).limit(limit).all()
     
     res = []
     for log, user in logs:

@@ -40,13 +40,18 @@ def _parse_job_json_fields(job: Job) -> dict:
     return d
 
 @router.get("", response_model=List[JobResponse])
-def list_jobs(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_jobs(
+    limit: int = 100, 
+    offset: int = 0, 
+    current_user: dict = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
     if current_user["role"] == "admin":
-        jobs = db.query(Job).order_by(Job.id.desc()).all()
+        jobs = db.query(Job).order_by(Job.id.desc()).offset(offset).limit(limit).all()
     elif current_user["role"] == "recruiter":
-        jobs = db.query(Job).filter(Job.recruiter_id == current_user["id"]).order_by(Job.id.desc()).all()
+        jobs = db.query(Job).filter(Job.recruiter_id == current_user["id"]).order_by(Job.id.desc()).offset(offset).limit(limit).all()
     else:
-        jobs = db.query(Job).filter(Job.status == 'active').order_by(Job.id.desc()).all()
+        jobs = db.query(Job).filter(Job.status == 'active').order_by(Job.id.desc()).offset(offset).limit(limit).all()
         
     return [_parse_job_json_fields(j) for j in jobs]
 

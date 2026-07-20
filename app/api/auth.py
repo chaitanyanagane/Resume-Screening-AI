@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
 from app.core.database import get_db
+from app.core.security import limiter
 from app.models.user import User, RefreshToken
 from app.models.activity_log import ActivityLog
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, TokenRefreshRequest
@@ -21,12 +22,10 @@ from app.core.auth import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-def register(req: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     if req.role not in ['candidate', 'recruiter', 'admin']:
         raise HTTPException(status_code=400, detail="Invalid account role selection")
-        
-    if len(req.password) < 8 or not any(char.isdigit() for char in req.password) or not any(char.isalpha() for char in req.password):
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long and contain both letters and numbers.")
         
     existing_user = db.query(User).filter(User.email == req.email).first()
     if existing_user:
@@ -64,7 +63,8 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(req: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
     
     if user is None or not verify_password(req.password, user.password_hash):
@@ -95,6 +95,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     return {
         "access_token": access_token,
         "token_type": "bearer",
+        "user_id": user.id,
         "role": user.role,
         "name": user.name,
         "email": user.email,
