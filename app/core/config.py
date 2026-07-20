@@ -6,7 +6,7 @@ defaults so the app works out-of-the-box with ``uvicorn app.main:app``.
 """
 
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 import os
 
 
@@ -30,12 +30,9 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
     # ── File Uploads ────────────────────────────────────────────────────
-    UPLOAD_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
-    MAX_FILE_SIZE_MB: int = 5
-
-    @property
-    def max_file_size_bytes(self) -> int:
-        return self.MAX_FILE_SIZE_MB * 1024 * 1024
+    # File Upload constraints
+    max_file_size_bytes: int = 5 * 1024 * 1024  # 5MB limit
+    CLOUDINARY_URL: Optional[str] = None
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

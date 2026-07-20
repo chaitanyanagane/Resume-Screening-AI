@@ -17,7 +17,7 @@ class CandidateProfile(Base):
     inferred_gender = Column(Text, default="Unknown")
     email = Column(Text, nullable=True)
     phone = Column(Text, nullable=True)
-    resume_filename = Column(Text, nullable=True)
+    resume_url = Column(Text, nullable=True)
     created_at = Column(Text, nullable=False)
 
     # Relationships

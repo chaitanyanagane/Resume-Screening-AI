@@ -45,6 +45,32 @@ def extract_text(file_path: str) -> str:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
 
+def extract_text_from_bytes(contents: bytes, ext: str) -> str:
+    """Auto-detect format and extract text from bytes directly."""
+    import io
+    if ext == ".pdf":
+        try:
+            import PyPDF2
+            text = ""
+            reader = PyPDF2.PdfReader(io.BytesIO(contents))
+            for page in reader.pages:
+                text += page.extract_text() or ""
+            return text
+        except Exception as e:
+            raise ValueError(f"PDF extraction error: {e}")
+    elif ext in [".docx", ".doc"]:
+        try:
+            import docx
+            doc = docx.Document(io.BytesIO(contents))
+            return "\n".join([para.text for para in doc.paragraphs])
+        except Exception as e:
+            raise ValueError(f"DOCX extraction error: {e}")
+    else:
+        try:
+            return contents.decode("utf-8")
+        except UnicodeDecodeError:
+            return contents.decode("latin-1", errors="ignore")
+
 
 # ─── NLP Preprocessing ──────────────────────────────────────────────────────
 

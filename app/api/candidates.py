@@ -1,10 +1,14 @@
 import os
 import uuid
 import json
+import time
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
+
+import cloudinary
+import cloudinary.uploader
 
 from app.core.database import get_db
 from app.core.config import settings
@@ -12,9 +16,14 @@ from app.models.candidate import CandidateProfile
 from app.models.activity_log import ActivityLog
 from app.core.auth import get_current_user, RoleChecker
 from app.ai.bias_auditor import infer_gender
-from app.ai.resume_parser import extract_text, parse_resume
+from app.ai.resume_parser import extract_text_from_bytes, parse_resume
 
 router = APIRouter(prefix="/candidates", tags=["candidates"])
+
+# Configure Cloudinary if URL is available
+if settings.CLOUDINARY_URL:
+    cloudinary.config(url=settings.CLOUDINARY_URL)
+
 
 @router.post("/profile/upload")
 async def upload_resume(
@@ -33,14 +42,32 @@ async def upload_resume(
     if ext == ".pdf" and not contents.startswith(b"%PDF"):
         raise HTTPException(status_code=400, detail="Invalid PDF binary payload signature.")
         
-    unique_filename = f"{uuid.uuid4().hex}{ext}"
-    target_path = os.path.join(settings.UPLOAD_DIR, unique_filename)
-    
-    with open(target_path, "wb") as f:
-        f.write(contents)
+    # Attempt Cloudinary upload with retries
+    secure_url = None
+    if settings.CLOUDINARY_URL:
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Upload to Cloudinary directly from memory
+                response = cloudinary.uploader.upload(
+                    contents,
+                    resource_type="auto",
+                    folder="hiresense_resumes",
+                    filename_override=file.filename
+                )
+                secure_url = response.get("secure_url")
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise HTTPException(status_code=502, detail=f"Cloudinary upload failed: {str(e)}")
+                time.sleep(1) # wait before retrying
+    else:
+        # Fallback if Cloudinary is not configured during dev (though not recommended for prod)
+        raise HTTPException(status_code=501, detail="Cloudinary is not configured. Please set CLOUDINARY_URL.")
         
     try:
-        resume_text = extract_text(target_path)
+        # Extract text directly from memory
+        resume_text = extract_text_from_bytes(contents, ext)
         parsed = parse_resume(resume_text)
         inferred_gen = infer_gender(resume_text)
         
@@ -56,7 +83,7 @@ async def upload_resume(
             profile.inferred_gender = inferred_gen
             profile.email = parsed.get("email") or current_user.get("email")
             profile.phone = parsed.get("phone") or current_user.get("phone")
-            profile.resume_filename = unique_filename
+            profile.resume_url = secure_url
         else:
             profile = CandidateProfile(
                 user_id=current_user["id"],
@@ -67,7 +94,7 @@ async def upload_resume(
                 inferred_gender=inferred_gen,
                 email=parsed.get("email") or current_user.get("email"),
                 phone=parsed.get("phone") or current_user.get("phone"),
-                resume_filename=unique_filename,
+                resume_url=secure_url,
                 created_at=now
             )
             db.add(profile)
@@ -75,7 +102,7 @@ async def upload_resume(
         log = ActivityLog(
             user_id=current_user["id"],
             action="upload_resume",
-            details=f"Uploaded resume: {file.filename} (stored as {unique_filename})",
+            details=f"Uploaded resume: {file.filename} to Cloudinary",
             created_at=now
         )
         db.add(log)
@@ -92,8 +119,6 @@ async def upload_resume(
         }
     except Exception as e:
         db.rollback()
-        if os.path.exists(target_path):
-            os.unlink(target_path)
         raise HTTPException(status_code=500, detail=f"Failed to process and parse resume: {str(e)}")
 
 @router.get("/profile")
@@ -112,7 +137,7 @@ def get_candidate_profile(current_user: dict = Depends(RoleChecker(['candidate']
         "inferred_gender": prof.inferred_gender,
         "email": prof.email,
         "phone": prof.phone,
-        "resume_filename": prof.resume_filename,
+        "resume_url": prof.resume_url,
         "created_at": prof.created_at,
         "has_profile": True
     }
@@ -123,31 +148,25 @@ def get_candidate_profile(current_user: dict = Depends(RoleChecker(['candidate']
         
     return d
 
-@router.get("/profile/resume/download/{filename}")
-def download_resume_endpoint(filename: str, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    from fastapi.responses import FileResponse
-    
+@router.get("/profile/resume/download")
+def download_resume_endpoint(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Replaced local file serving with redirect to Cloudinary URL
     if current_user["role"] == "candidate":
         prof = db.query(CandidateProfile).filter(CandidateProfile.user_id == current_user["id"]).first()
-        if not prof or prof.resume_filename != filename:
-            raise HTTPException(status_code=403, detail="Access denied. You can only download your own resume.")
+        if not prof or not prof.resume_url:
+            raise HTTPException(status_code=404, detail="Requested resume not found.")
             
-    safe_filename = os.path.basename(filename)
-    file_path = os.path.realpath(os.path.join(settings.UPLOAD_DIR, safe_filename))
-    if not file_path.startswith(os.path.realpath(settings.UPLOAD_DIR)):
-        raise HTTPException(status_code=403, detail="Invalid file path.")
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Requested resume file not found.")
+        now = datetime.now(timezone.utc).isoformat()
+        log = ActivityLog(
+            user_id=current_user["id"],
+            action="download_resume",
+            details="Downloaded resume via Cloudinary secure URL",
+            created_at=now
+        )
+        db.add(log)
+        db.commit()
         
-    now = datetime.now(timezone.utc).isoformat()
-    log = ActivityLog(
-        user_id=current_user["id"],
-        action="download_resume",
-        details=f"Downloaded resume: {safe_filename}",
-        created_at=now
-    )
-    db.add(log)
-    db.commit()
+        return RedirectResponse(url=prof.resume_url)
     
-    return FileResponse(file_path, media_type="application/octet-stream", filename=safe_filename)
+    raise HTTPException(status_code=403, detail="Access denied.")
 
