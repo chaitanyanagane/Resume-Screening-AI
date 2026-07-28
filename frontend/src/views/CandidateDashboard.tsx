@@ -26,21 +26,21 @@ export default function CandidateDashboard({ token }: CandidateDashboardProps) {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const profData = await profRes.json();
-      setProfile(profData.has_profile ? profData : null);
+      setProfile(profData && profData.has_profile ? profData : null);
 
       // 2. Browse Jobs list
       const jobsRes = await fetch(`${API_BASE}/api/jobs`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const jobsData = await jobsRes.json();
-      setJobs(jobsData);
+      setJobs(Array.isArray(jobsData) ? jobsData : []);
 
       // 3. Applications
       const appsRes = await fetch(`${API_BASE}/api/applications`, {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const appsData = await appsRes.json();
-      setApplications(appsData);
+      setApplications(Array.isArray(appsData) ? appsData : []);
     } catch (err) {
       console.error("Error fetching candidate data:", err);
     } finally {

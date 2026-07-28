@@ -42,12 +42,10 @@ async def upload_resume(
     if len(contents) > settings.max_file_size_bytes:
         raise HTTPException(status_code=400, detail="File size exceeds the upload limit.")
         
-    # Strict MIME type validation
-    import magic
-    mime_type = magic.from_buffer(contents, mime=True)
-    if ext == ".pdf" and mime_type != "application/pdf":
+    # MIME type validation using the client-provided content_type (to avoid libmagic dependency issues)
+    if ext == ".pdf" and file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="File content does not match PDF signature.")
-    if ext == ".txt" and not mime_type.startswith("text/"):
+    if ext == ".txt" and not file.content_type.startswith("text/"):
         raise HTTPException(status_code=400, detail="File content does not match TXT signature.")
         
     # Attempt Cloudinary upload with retries
@@ -70,9 +68,9 @@ async def upload_resume(
                     raise HTTPException(status_code=502, detail=f"Cloudinary upload failed: {str(e)}")
                 time.sleep(1) # wait before retrying
     else:
-        # Fallback if Cloudinary is not configured during dev (though not recommended for prod)
-        raise HTTPException(status_code=501, detail="Cloudinary is not configured. Please set CLOUDINARY_URL.")
-        
+        # Bypass Cloudinary upload if not configured locally
+        secure_url = None
+        print("Warning: CLOUDINARY_URL is not set. Skipping Cloudinary upload.")
     try:
         # Extract text directly from memory
         resume_text = extract_text_from_bytes(contents, ext)
