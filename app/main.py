@@ -26,7 +26,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting HireSense API in {settings.ENVIRONMENT} mode.")
     
     if settings.ENVIRONMENT == "production":
-        if settings.DATABASE_URL.startswith("sqlite"):
+        from app.core.database import db_url
+        if db_url.startswith("sqlite"):
             logger.error("SQLite is not supported in production! Set a proper DATABASE_URL.")
             sys.exit(1)
         if settings.JWT_SECRET == "hiresense_jwt_super_secret_key_change_in_production":
@@ -36,9 +37,13 @@ async def lifespan(app: FastAPI):
             logger.warning("CLOUDINARY_URL is not set. File uploads will fail.")
             
     # For dev, we use create_all, in prod Alembic should have run
-    if settings.ENVIRONMENT == "development":
-        logger.info("Initializing SQLite database for development.")
-        Base.metadata.create_all(bind=engine)
+    # If on serverless where db_url was mapped to /tmp, this will create it there successfully
+    if settings.ENVIRONMENT == "development" or "sqlite" in settings.DATABASE_URL:
+        logger.info("Initializing SQLite database if missing.")
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}")
         
     yield
     
