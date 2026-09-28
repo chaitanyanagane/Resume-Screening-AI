@@ -66,9 +66,24 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+_tables_initialized = False
+
 # ── FastAPI dependency ──────────────────────────────────────────────────
 def get_db() -> Generator[Session, None, None]:
     """Yield a database session and ensure it is closed after the request."""
+    global _tables_initialized
+    if not _tables_initialized:
+        try:
+            Base.metadata.create_all(bind=engine)
+            if "sqlite" in db_url:
+                from app.core.seed import seed_initial_data
+                seed_initial_data()
+            _tables_initialized = True
+        except Exception as e:
+            import logging
+            logging.getLogger("hiresense.db").warning(f"Lazy table creation in get_db: {e}")
+            _tables_initialized = True
+
     db = SessionLocal()
     try:
         yield db
