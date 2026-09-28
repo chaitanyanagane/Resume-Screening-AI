@@ -34,12 +34,13 @@ async def lifespan(app: FastAPI):
         if not settings.CLOUDINARY_URL:
             logger.warning("CLOUDINARY_URL is not set. Resumes will be processed in-memory.")
             
-    # Always ensure tables exist and seed demo/admin accounts if database is fresh
-    try:
-        from app.core.seed import seed_initial_data
-        seed_initial_data()
-    except Exception as e:
-        logger.error(f"Error initializing or seeding database: {e}")
+    # Only bootstrap if running local SQLite database
+    if "sqlite" in settings.DATABASE_URL:
+        try:
+            from app.core.seed import seed_initial_data
+            seed_initial_data()
+        except Exception as e:
+            logger.error(f"Error initializing SQLite database: {e}")
         
     yield
     
