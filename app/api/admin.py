@@ -49,3 +49,37 @@ def get_admin_logs(
             "user_role": user.role if user else None
         })
     return res
+
+
+@router.put("/users/{user_id}/role")
+def update_user_role(
+    user_id: int,
+    payload: dict,
+    current_user: dict = Depends(RoleChecker(['admin'])),
+    db: Session = Depends(get_db)
+):
+    from fastapi import HTTPException
+    from datetime import datetime, timezone
+    
+    new_role = payload.get("role")
+    if new_role not in ["candidate", "recruiter", "admin"]:
+        raise HTTPException(status_code=400, detail="Invalid role specified.")
+    
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    
+    old_role = user.role
+    user.role = new_role
+    
+    # Log admin action in activity_logs
+    log = ActivityLog(
+        user_id=current_user.get("user_id"),
+        action="UPDATE_USER_ROLE",
+        details=f"Admin updated user {user.email} (ID {user.id}) role from {old_role} to {new_role}.",
+        created_at=datetime.now(timezone.utc).isoformat()
+    )
+    db.add(log)
+    db.commit()
+    
+    return {"message": "Role updated successfully", "user_id": user.id, "new_role": user.role}

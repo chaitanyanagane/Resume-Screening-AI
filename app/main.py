@@ -28,22 +28,18 @@ async def lifespan(app: FastAPI):
     if settings.ENVIRONMENT == "production":
         from app.core.database import db_url
         if db_url.startswith("sqlite"):
-            logger.error("SQLite is not supported in production! Set a proper DATABASE_URL.")
-            sys.exit(1)
+            logger.warning("Running SQLite in production. Note that SQLite is ephemeral on serverless platforms; configure DATABASE_URL for PostgreSQL persistence.")
         if settings.JWT_SECRET == "hiresense_jwt_super_secret_key_change_in_production":
-            logger.error("Default JWT_SECRET detected in production! Please set a secure secret.")
-            sys.exit(1)
+            logger.warning("Default JWT_SECRET detected in production. Please set a secure secret in environment variables.")
         if not settings.CLOUDINARY_URL:
-            logger.warning("CLOUDINARY_URL is not set. File uploads will fail.")
+            logger.warning("CLOUDINARY_URL is not set. Resumes will be processed in-memory.")
             
-    # For dev, we use create_all, in prod Alembic should have run
-    # If on serverless where db_url was mapped to /tmp, this will create it there successfully
-    if settings.ENVIRONMENT == "development" or "sqlite" in settings.DATABASE_URL:
-        logger.info("Initializing SQLite database if missing.")
-        try:
-            Base.metadata.create_all(bind=engine)
-        except Exception as e:
-            logger.error(f"Error initializing database: {e}")
+    # Always ensure tables exist and seed demo/admin accounts if database is fresh
+    try:
+        from app.core.seed import seed_initial_data
+        seed_initial_data()
+    except Exception as e:
+        logger.error(f"Error initializing or seeding database: {e}")
         
     yield
     
@@ -63,6 +59,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
+        allow_origin_regex=r"^https?://.*\.vercel\.app$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

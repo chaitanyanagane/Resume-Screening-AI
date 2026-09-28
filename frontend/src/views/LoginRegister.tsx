@@ -1,8 +1,6 @@
 import React, { useState } from "react";
 import { Shield, AlertCircle } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-
+import { API_BASE } from "../config";
 
 interface LoginRegisterProps {
   onLoginSuccess: (token: string, role: string, name: string) => void;
@@ -39,7 +37,10 @@ export default function LoginRegister({ onLoginSuccess }: LoginRegisterProps) {
         const data = await response.json();
         
         if (!response.ok) {
-          throw new Error(data.detail || "Login failed");
+          const msg = Array.isArray(data.detail)
+            ? data.detail.map((e: any) => e.msg || e.message).join(", ")
+            : (typeof data.detail === "string" ? data.detail : "Login failed");
+          throw new Error(msg);
         }
         
         onLoginSuccess(data.access_token, data.role, data.name);
@@ -53,7 +54,10 @@ export default function LoginRegister({ onLoginSuccess }: LoginRegisterProps) {
         const data = await response.json();
         
         if (!response.ok) {
-          throw new Error(data.detail || "Registration failed");
+          const msg = Array.isArray(data.detail)
+            ? data.detail.map((e: any) => e.msg || e.message).join(", ")
+            : (typeof data.detail === "string" ? data.detail : "Registration failed");
+          throw new Error(msg);
         }
         
         setSuccessMsg("Account created successfully! Switching to sign in...");

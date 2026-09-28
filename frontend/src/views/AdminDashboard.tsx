@@ -1,8 +1,6 @@
 import { useState, useEffect } from "react";
 import { Activity } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-
+import { API_BASE } from "../config";
 
 interface AdminDashboardProps {
   token: string;
@@ -49,8 +47,24 @@ export default function AdminDashboard({ token }: AdminDashboardProps) {
   }, []);
 
   const handleRoleChange = async (userId: number, newRole: string) => {
-    alert(`Role modified for user ID ${userId} to ${newRole}! (Mocked database update). In production, configure role update transaction API.`);
-    fetchData();
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users/${userId}/role`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ role: newRole })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.detail || "Failed to update role");
+      }
+      fetchData();
+    } catch (err) {
+      console.error("Error modifying user role:", err);
+      fetchData();
+    }
   };
 
   if (loading) {

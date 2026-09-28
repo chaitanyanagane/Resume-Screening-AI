@@ -6,9 +6,7 @@ import {
   Sparkles, Pin, Bell, Download, Trash, Eye, 
   List, Send
 } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-
+import { API_BASE } from "../config";
 interface RecruiterDashboardProps {
   token: string;
 }

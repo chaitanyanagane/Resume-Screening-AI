@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Upload, FileText, Clock } from "lucide-react";
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-
+import { API_BASE } from "../config";
 
 interface CandidateDashboardProps {
   token: string;

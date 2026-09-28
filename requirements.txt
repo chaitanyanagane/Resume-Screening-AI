@@ -23,6 +23,7 @@ scikit-learn
 scipy
 slowapi
 SQLAlchemy
+psycopg2-binary
 starlette
 typing-extensions
 urllib3

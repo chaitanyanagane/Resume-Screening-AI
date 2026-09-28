@@ -13,7 +13,11 @@ from app.core.config import settings
 
 # ── Engine creation ─────────────────────────────────────────────────────
 db_url = settings.DATABASE_URL
-if db_url.startswith("sqlite:///./") and not os.access(".", os.W_OK):
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+is_vercel = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+if (is_vercel or not os.access(".", os.W_OK)) and db_url.startswith("sqlite:///./"):
     # Fallback to /tmp in read-only environments like Vercel serverless
     db_url = "sqlite:////tmp/hiresense.db"
 
@@ -24,12 +28,30 @@ if db_url.startswith("sqlite"):
     _connect_args["check_same_thread"] = False
     # SQLite does not support pool_size / max_overflow
     _engine_kwargs.pop("pool_pre_ping", None)
+else:
+    # PostgreSQL settings
+    _engine_kwargs["pool_recycle"] = 300
+    _engine_kwargs["pool_size"] = 5
+    _engine_kwargs["max_overflow"] = 10
 
-engine = create_engine(
-    db_url,
-    connect_args=_connect_args,
-    **_engine_kwargs,
-)
+try:
+    engine = create_engine(
+        db_url,
+        connect_args=_connect_args,
+        **_engine_kwargs,
+    )
+except (ModuleNotFoundError, ImportError) as e:
+    if "psycopg" in str(e):
+        import logging
+        logging.getLogger("hiresense.db").warning(
+            f"PostgreSQL driver missing ({e}). Falling back to SQLite database."
+        )
+        db_url = "sqlite:////tmp/hiresense.db" if is_vercel else "sqlite:///./hiresense.db"
+        _connect_args = {"check_same_thread": False}
+        _engine_kwargs = {}
+        engine = create_engine(db_url, connect_args=_connect_args)
+    else:
+        raise
 
 # Enable foreign key enforcement for SQLite
 if db_url.startswith("sqlite"):

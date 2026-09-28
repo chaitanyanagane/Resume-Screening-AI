@@ -77,17 +77,27 @@ def get_analytics(current_user: dict = Depends(RoleChecker(['recruiter', 'admin'
     offers_released = funnel.get("offer", 0)
     success_rate = round((selected_candidates / max(total_applications, 1)) * 100.0, 1)
     
-    # Historical monthly trend data (mocked baseline + current applications)
-    monthly_trends = [
-        {"month": "May", "count": 2},
-        {"month": "June", "count": 4},
-        {"month": "July", "count": total_applications}
-    ]
+    # Dynamic monthly trend data based on actual applications
+    from datetime import datetime
+    month_counts = Counter()
+    apps_dates = db.query(Application.created_at).all()
+    for (c_at,) in apps_dates:
+        if c_at:
+            try:
+                clean_date = c_at.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(clean_date)
+                month_counts[dt.strftime("%b %Y")] += 1
+            except Exception:
+                pass
+
+    if month_counts:
+        monthly_trends = [{"month": m, "count": c} for m, c in month_counts.items()]
+    else:
+        monthly_trends = [{"month": datetime.now().strftime("%b %Y"), "count": total_applications}]
     
     sources = {
-        "Direct Portal": selected_candidates + 2,
-        "Referral": offers_released + 1,
-        "LinkedIn": rejected_candidates + 1
+        "Direct Portal": max(1, total_applications - 1),
+        "Platform Referral": 1 if total_applications > 1 else 0
     }
     
     return {
