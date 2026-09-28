@@ -11,7 +11,6 @@ bias would be detected and reported.
 """
 
 import numpy as np
-import pandas as pd
 from typing import List, Dict, Optional
 
 
@@ -59,17 +58,25 @@ def demographic_parity_difference(
     
     Target: DPD < 0.05 (5%)
     """
-    df = pd.DataFrame({'pred': y_pred, 'group': sensitive_features})
+    # Compute selection rates per group
+    from collections import defaultdict
+    group_totals = defaultdict(int)
+    group_positives = defaultdict(int)
+    for p, g in zip(y_pred, sensitive_features):
+        group_totals[g] += 1
+        if p == 1:
+            group_positives[g] += 1
+
     # Filter out 'Unknown' if we have 'Male' and 'Female' to compute real gender difference
-    df_gender = df[df['group'].isin(['Male', 'Female'])]
-    if not df_gender.empty and len(df_gender['group'].unique()) >= 2:
-        group_rates = df_gender.groupby('group')['pred'].mean()
-    else:
-        group_rates = df.groupby('group')['pred'].mean()
-        
-    if len(group_rates) < 2:
+    active_groups = [g for g in group_totals if g in ['Male', 'Female']]
+    if len(active_groups) < 2:
+        active_groups = list(group_totals.keys())
+
+    if len(active_groups) < 2:
         return 0.0
-    return float(group_rates.max() - group_rates.min())
+
+    rates = [group_positives[g] / max(1, group_totals[g]) for g in active_groups]
+    return float(max(rates) - min(rates))
 
 
 def equal_opportunity_difference(
@@ -82,24 +89,24 @@ def equal_opportunity_difference(
     Difference in True Positive Rates across groups.
     Target: EOD < 0.05
     """
-    df = pd.DataFrame({
-        'true': y_true,
-        'pred': y_pred,
-        'group': sensitive_features
-    })
-    df_gender = df[df['group'].isin(['Male', 'Female'])]
-    # True positive rate per group
-    def tpr(grp):
-        pos = grp[grp['true'] == 1]
-        if len(pos) == 0:
-            return 0.0
-        return (pos['pred'] == 1).mean()
+    from collections import defaultdict
+    group_actual_pos = defaultdict(int)
+    group_true_pos = defaultdict(int)
+    for y_t, y_p, g in zip(y_true, y_pred, sensitive_features):
+        if y_t == 1:
+            group_actual_pos[g] += 1
+            if y_p == 1:
+                group_true_pos[g] += 1
 
-    target_df = df_gender if (not df_gender.empty and len(df_gender['group'].unique()) >= 2) else df
-    tprs = target_df.groupby('group').apply(tpr)
-    if len(tprs) < 2:
+    active_groups = [g for g in group_actual_pos if g in ['Male', 'Female']]
+    if len(active_groups) < 2:
+        active_groups = list(group_actual_pos.keys())
+
+    if len(active_groups) < 2:
         return 0.0
-    return float(tprs.max() - tprs.min())
+
+    tprs = [group_true_pos[g] / max(1, group_actual_pos[g]) for g in active_groups]
+    return float(max(tprs) - min(tprs))
 
 
 # ─── Heuristic Gender Inference ───────────────────────────────────────────────
@@ -234,9 +241,12 @@ def adjust_thresholds(
     Compute per-group thresholds to equalize shortlist rates.
     Post-processing bias mitigation.
     """
-    df = pd.DataFrame({'score': scores, 'group': groups})
+    from collections import defaultdict
+    group_scores = defaultdict(list)
+    for s, g in zip(scores, groups):
+        group_scores[g].append(s)
+
     thresholds = {}
-    for g, grp_df in df.groupby('group'):
-        # Set threshold at (1 - target_tpr) percentile of that group
-        thresholds[g] = float(np.percentile(grp_df['score'], (1 - target_tpr) * 100))
+    for g, g_scores in group_scores.items():
+        thresholds[g] = float(np.percentile(g_scores, (1 - target_tpr) * 100))
     return thresholds
