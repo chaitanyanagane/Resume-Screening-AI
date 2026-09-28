@@ -24,7 +24,6 @@ scipy
 slowapi
 SQLAlchemy
 psycopg2-binary
-pg8000
 starlette
 typing-extensions
 urllib3

@@ -42,20 +42,13 @@ try:
     )
 except (ModuleNotFoundError, ImportError) as e:
     import logging
-    logger = logging.getLogger("hiresense.db")
-    if "psycopg" in str(e) and db_url.startswith("postgresql://"):
-        try:
-            logger.info("Attempting connection with pure-Python pg8000 driver...")
-            pg8000_url = db_url.replace("postgresql://", "postgresql+pg8000://", 1)
-            engine = create_engine(pg8000_url, **_engine_kwargs)
-        except Exception as pg8_err:
-            logger.warning(f"pg8000 fallback failed: {pg8_err}. Using SQLite.")
-            db_url = "sqlite:////tmp/hiresense.db" if is_vercel else "sqlite:///./hiresense.db"
-            engine = create_engine(db_url, connect_args={"check_same_thread": False})
-    else:
-        logger.warning(f"Database driver error ({e}). Using SQLite.")
-        db_url = "sqlite:////tmp/hiresense.db" if is_vercel else "sqlite:///./hiresense.db"
-        engine = create_engine(db_url, connect_args={"check_same_thread": False})
+    logging.getLogger("hiresense.db").warning(
+        f"PostgreSQL driver missing ({e}). Falling back to SQLite database."
+    )
+    db_url = "sqlite:////tmp/hiresense.db" if is_vercel else "sqlite:///./hiresense.db"
+    _connect_args = {"check_same_thread": False}
+    _engine_kwargs = {}
+    engine = create_engine(db_url, connect_args=_connect_args)
 
 # Enable foreign key enforcement for SQLite
 if db_url.startswith("sqlite"):
